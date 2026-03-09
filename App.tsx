@@ -1,577 +1,897 @@
-import { useState, useEffect } from "react";
-
 /*
- * ╔═══════════════════════════════════════════════════════════════╗
- * ║           GIGPILOT AI — COMPLETE UK SAAS PLATFORM            ║
- * ║                                                               ║
- * ║  To make everything work, set these environment variables     ║
- * ║  in your Vercel project settings:                             ║
- * ║                                                               ║
- * ║  VITE_SUPABASE_URL        → your Supabase project URL        ║
- * ║  VITE_SUPABASE_ANON_KEY   → your Supabase anon key          ║
- * ║  VITE_ANTHROPIC_KEY       → your Anthropic API key           ║
- * ║  VITE_STRIPE_KEY          → your Stripe publishable key      ║
- * ║                                                               ║
- * ║  Supabase setup:                                              ║
- * ║  1. Create project at supabase.com                           ║
- * ║  2. Run the SQL in SUPABASE_SETUP.sql                        ║
- * ║  3. Enable Google OAuth in Auth > Providers                   ║
- * ║  4. Add your Vercel URL to redirect URLs                      ║
- * ║                                                               ║
- * ║  Stripe setup:                                                ║
- * ║  1. Create products at stripe.com                            ║
- * ║  2. Update STRIPE_PRICE_IDS below                            ║
- * ║  3. Deploy Stripe webhook (see STRIPE_WEBHOOK.md)            ║
- * ╚═══════════════════════════════════════════════════════════════╝
- */
+██████╗ ██╗ ██████╗ ██████╗ ██╗██╗      ██████╗ ████████╗     █████╗ ██╗
+██╔════╝ ██║██╔════╝ ██╔══██╗██║██║     ██╔═══██╗╚══██╔══╝    ██╔══██╗██║
+██║  ███╗██║██║  ███╗██████╔╝██║██║     ██║   ██║   ██║       ███████║██║
+██║   ██║██║██║   ██║██╔═══╝ ██║██║     ██║   ██║   ██║       ██╔══██║██║
+╚██████╔╝██║╚██████╔╝██║     ██║███████╗╚██████╔╝   ██║       ██║  ██║██║
+ ╚═════╝ ╚═╝ ╚═════╝ ╚═╝     ╚═╝╚══════╝ ╚═════╝    ╚═╝       ╚═╝  ╚═╝╚═╝
 
-// ─── CONFIG ───────────────────────────────────────────────────────────────────
-const SUPABASE_URL = import.meta.env?.VITE_SUPABASE_URL || "";
-const SUPABASE_KEY = import.meta.env?.VITE_SUPABASE_ANON_KEY || "";
-const ANTHROPIC_KEY = import.meta.env?.VITE_ANTHROPIC_KEY || "";
-const STRIPE_KEY = import.meta.env?.VITE_STRIPE_KEY || "";
+COMPLETE PRODUCTION SAAS — LONDON MUSIC BOOKING ASSISTANT
+==========================================================
 
-const STRIPE_PRICE_IDS = {
-  artist: "price_artist_monthly_gbp", // Replace with your Stripe price ID
-  pro: "price_pro_monthly_gbp",       // Replace with your Stripe price ID
+ENVIRONMENT VARIABLES (set in Vercel → Settings → Environment Variables):
+
+  VITE_SUPABASE_URL          Your Supabase project URL
+  VITE_SUPABASE_ANON_KEY     Your Supabase anon/public key
+  VITE_ANTHROPIC_KEY         Your Anthropic API key
+  VITE_STRIPE_PUBLISHABLE_KEY  Your Stripe publishable key (pk_live_...)
+
+  Server-side (for api/ routes):
+  RESEND_API_KEY             Your Resend API key
+  STRIPE_SECRET_KEY          Your Stripe secret key (sk_live_...)
+  STRIPE_WEBHOOK_SECRET      Your Stripe webhook signing secret
+
+SUPABASE SETUP:
+  1. Go to supabase.com → New project
+  2. SQL Editor → paste contents of SUPABASE_SETUP.sql → Run
+  3. Authentication → Providers → Google → Enable
+     Add your Google OAuth credentials (from console.cloud.google.com)
+  4. Authentication → URL Configuration:
+     Site URL: https://your-vercel-app.vercel.app
+     Redirect URLs: https://your-vercel-app.vercel.app/**
+
+STRIPE SETUP:
+  1. stripe.com → Products → Add product
+     "Artist Plan" → £15/month recurring → copy Price ID → VITE_STRIPE_ARTIST_PRICE_ID
+     "Pro Plan" → £39/month recurring → copy Price ID → VITE_STRIPE_PRO_PRICE_ID
+  2. Developers → Webhooks → Add endpoint
+     URL: https://your-vercel-app.vercel.app/api/stripe-webhook
+     Events: checkout.session.completed, customer.subscription.deleted
+
+RESEND SETUP:
+  1. resend.com → API Keys → Create key → RESEND_API_KEY
+  2. Domains → Add domain → verify DNS
+  3. Update FROM_EMAIL below with your verified domain
+
+*/
+
+import { useState, useEffect, useCallback } from "react";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CONFIG
+// ─────────────────────────────────────────────────────────────────────────────
+
+const CFG = {
+  supabaseUrl:  (import.meta as any).env?.VITE_SUPABASE_URL        || "",
+  supabaseKey:  (import.meta as any).env?.VITE_SUPABASE_ANON_KEY   || "",
+  anthropicKey: (import.meta as any).env?.VITE_ANTHROPIC_KEY        || "",
+  stripeKey:    (import.meta as any).env?.VITE_STRIPE_PUBLISHABLE_KEY || "",
+  artistPriceId:(import.meta as any).env?.VITE_STRIPE_ARTIST_PRICE_ID || "price_artist_gbp",
+  proPriceId:   (import.meta as any).env?.VITE_STRIPE_PRO_PRICE_ID   || "price_pro_gbp",
+  fromEmail:    "bookings@gigpilot.co.uk", // Update after verifying domain in Resend
 };
 
-const DEMO_MODE = !SUPABASE_URL;
+const DEMO = !CFG.supabaseUrl;
 
-// ─── STYLES ───────────────────────────────────────────────────────────────────
-const G = `
-@import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,300&display=swap');
+// ─────────────────────────────────────────────────────────────────────────────
+// TYPES
+// ─────────────────────────────────────────────────────────────────────────────
 
-*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-:root{
-  --bg:#080b14;
-  --surface:#0d1120;
-  --card:#111827;
-  --card2:#161d2e;
-  --border:#1e2840;
-  --border2:#273352;
-  --gold:#e8b84b;
-  --gold2:#f5d078;
-  --goldDim:rgba(232,184,75,.12);
-  --goldGlow:rgba(232,184,75,.25);
-  --emerald:#2dd4a0;
-  --emeraldDim:rgba(45,212,160,.1);
-  --crimson:#f05365;
-  --crimsonDim:rgba(240,83,101,.1);
-  --sky:#5b9cf6;
-  --skyDim:rgba(91,156,246,.1);
-  --lavender:#a78bfa;
-  --text:#f0f2f8;
-  --text2:#8b93b0;
-  --text3:#4a5270;
-  --font-d:'Syne',sans-serif;
-  --font-b:'DM Sans',sans-serif;
-  --r:10px;--r2:16px;--r3:24px;
+interface User { id: string; email: string; name: string; provider: string; }
+interface Profile {
+  artistName: string; area: string; genre: string;
+  similarArtists: string; bio: string;
+  spotify: string; soundcloud: string; instagram: string; website: string;
 }
-html{scroll-behavior:smooth}
-body{background:var(--bg);color:var(--text);font-family:var(--font-b);font-size:14px;line-height:1.6;overflow-x:hidden}
-h1,h2,h3,h4,h5,h6{font-family:var(--font-d);line-height:1.1}
-a{color:inherit;text-decoration:none}
-button{cursor:pointer;font-family:var(--font-b)}
-input,textarea,select{font-family:var(--font-b)}
-::-webkit-scrollbar{width:4px;height:4px}
-::-webkit-scrollbar-track{background:transparent}
-::-webkit-scrollbar-thumb{background:var(--border2);border-radius:2px}
+interface Venue {
+  id: number; name: string; area: string; borough: string;
+  capacity: number | null; genres: string[]; tier: string;
+  email: string; website: string; description: string; phone?: string;
+  score?: number; reason?: string; genreMatch?: string; locMatch?: string;
+}
+interface OutreachEntry {
+  id: string; venueId: number; venue: string; area: string;
+  date: string; status: "sent"|"replied"|"booked"|"no_response";
+  subject: string; body: string; notes: string;
+}
+type Plan = "free"|"artist"|"pro";
+type Screen = "landing"|"auth"|"onboarding"|"app";
+type Page = "dashboard"|"discover"|"outreach"|"venues"|"account";
+type ToastType = "ok"|"err"|"info";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LONDON VENUES DATABASE — 65 real UK London music venues
+// ─────────────────────────────────────────────────────────────────────────────
+
+const VENUES: Venue[] = [
+  // ── ICONIC / LEGENDARY ────────────────────────────────────────────────────
+  { id:1,  name:"100 Club",                  area:"Oxford Street",   borough:"Westminster",    capacity:350,  genres:["jazz","blues","punk","indie","rock","swing"],            tier:"iconic",    email:"info@the100club.co.uk",          website:"the100club.co.uk",          description:"One of the world's most historic live music venues, open since 1942. Hosted the Sex Pistols, The Who and countless jazz legends." },
+  { id:2,  name:"Ronnie Scott's Jazz Club",  area:"Soho",            borough:"Westminster",    capacity:200,  genres:["jazz","blues","soul","funk","fusion","bebop"],          tier:"iconic",    email:"bookings@ronniescotts.co.uk",     website:"ronniescotts.co.uk",        description:"World-famous jazz club in the heart of Soho since 1959. Arguably the most prestigious jazz room in Europe." },
+  { id:3,  name:"The Marquee Club",          area:"Soho",            borough:"Westminster",    capacity:700,  genres:["rock","indie","metal","alternative","blues rock"],      tier:"iconic",    email:"bookings@marqueeclub.com",        website:"marqueeclub.com",           description:"Legendary venue that launched The Rolling Stones, Jimi Hendrix and David Bowie. Reopened in Soho with a rich history." },
+  { id:4,  name:"606 Club",                  area:"Chelsea",         borough:"Kensington",    capacity:120,  genres:["jazz","soul","blues","funk","latin"],                   tier:"iconic",    email:"info@606club.co.uk",             website:"606club.co.uk",             description:"Chelsea's underground jazz gem. Strictly live music every single night with some of the UK's finest jazz musicians." },
+  { id:5,  name:"Pizza Express Jazz Club",   area:"Soho",            borough:"Westminster",    capacity:120,  genres:["jazz","soul","funk","blues","fusion","latin"],          tier:"specialist",email:"jazz@pizzaexpress.com",           website:"pizzaexpresslive.com",      description:"Beloved basement jazz venue beneath a Soho pizzeria. One of London's most intimate and atmospheric jazz rooms." },
+
+  // ── GRASSROOTS — EAST LONDON ──────────────────────────────────────────────
+  { id:6,  name:"Cafe Oto",                  area:"Dalston",         borough:"Hackney",       capacity:120,  genres:["experimental","noise","free jazz","electronic","avant-garde","drone"], tier:"grassroots", email:"info@cafeoto.co.uk",    website:"cafeoto.co.uk",             description:"Internationally celebrated hub for experimental and adventurous music. Artists from all over the world make Cafe Oto a pilgrimage." },
+  { id:7,  name:"Vortex Jazz Club",          area:"Dalston",         borough:"Hackney",       capacity:120,  genres:["jazz","experimental","world","free jazz","contemporary"], tier:"grassroots", email:"info@vortexjazz.co.uk",  website:"vortexjazz.co.uk",          description:"Premier destination for contemporary and experimental jazz. Nurtures new voices alongside established names." },
+  { id:8,  name:"Moth Club",                 area:"Hackney",         borough:"Hackney",       capacity:300,  genres:["indie","alternative","electronic","experimental","pop","art pop"], tier:"grassroots", email:"bookings@mothclub.co.uk", website:"mothclub.co.uk",        description:"Stunning art deco ballroom in Hackney with exceptional sound. A firm favourite for adventurous indie and alternative bookings." },
+  { id:9,  name:"Oslo Hackney",              area:"Hackney Central", borough:"Hackney",       capacity:250,  genres:["indie","electronic","pop","r&b","alternative","hip-hop"], tier:"grassroots", email:"music@oslohackney.com",   website:"oslohackney.com",           description:"Stylish multi-room venue above Hackney Central station. Known for breaking emerging artists across genres." },
+  { id:10, name:"Birthdays",                 area:"Dalston",         borough:"Hackney",       capacity:200,  genres:["electronic","indie","alternative","post-punk","experimental","techno"], tier:"grassroots", email:"bookings@birthdays-bar.co.uk", website:"birthdays-bar.co.uk", description:"Dalston's coolest small venue for cutting-edge underground music. Raw, unpretentious and beloved." },
+  { id:11, name:"Paper Dress Vintage",       area:"Hackney",         borough:"Hackney",       capacity:100,  genres:["indie","pop","electronic","alternative","art pop","queer"], tier:"grassroots", email:"events@paperdressvintage.co.uk", website:"paperdressvintage.co.uk", description:"Boutique vintage shop by day, eclectic music venue by night. Known for curated, creative programming." },
+  { id:12, name:"The Sebright Arms",         area:"Bethnal Green",   borough:"Tower Hamlets", capacity:200,  genres:["indie","alternative","experimental","art rock","post-punk","noise"], tier:"grassroots", email:"gigs@sebrightarms.co.uk", website:"sebrightarms.co.uk",       description:"Beloved East London institution for emerging and DIY artists. Unpretentious, community-driven and creatively vital." },
+  { id:13, name:"The Jago",                  area:"Stoke Newington", borough:"Hackney",       capacity:180,  genres:["indie","alternative","electronic","post-punk","dream pop","shoegaze"], tier:"grassroots", email:"bookings@thejago.com", website:"thejago.com",              description:"Stoke Newington's underground favourite with a loyal local following. Great for atmospheric, left-of-centre sounds." },
+  { id:14, name:"Passing Clouds",            area:"Dalston",         borough:"Hackney",       capacity:200,  genres:["world","reggae","jazz","soul","folk","afrobeat","electronic"], tier:"grassroots", email:"events@passingclouds.org", website:"passingclouds.org",        description:"Vibrant community arts space celebrating diversity. One of London's most welcoming and eclectic venues." },
+
+  // ── GRASSROOTS — SOUTH LONDON ─────────────────────────────────────────────
+  { id:15, name:"The Windmill Brixton",      area:"Brixton",         borough:"Lambeth",       capacity:150,  genres:["indie","punk","alternative","experimental","post-punk","noise rock"], tier:"grassroots", email:"bookings@windmillbrixton.co.uk", website:"windmillbrixton.co.uk", description:"The spiritual home of London DIY music. Every major indie and punk act of the last decade has played here." },
+  { id:16, name:"Hootananny Brixton",        area:"Brixton",         borough:"Lambeth",       capacity:400,  genres:["reggae","world","folk","acoustic","indie","ska","dub"],  tier:"grassroots", email:"gigs@hootanannybrixton.co.uk",   website:"hootanannybrixton.co.uk",   description:"Vibrant Brixton venue celebrating global music. Three floors, three bars, and reggae roots running deep." },
+  { id:17, name:"The Half Moon Putney",      area:"Putney",          borough:"Wandsworth",    capacity:200,  genres:["blues","rock","indie","americana","folk","country","roots"], tier:"grassroots", email:"bookings@halfmoon.co.uk",      website:"halfmoon.co.uk",            description:"Historic South West London venue with over 50 years of live music heritage. Launched countless careers." },
+  { id:18, name:"The Amersham Arms",         area:"New Cross",       borough:"Lewisham",      capacity:150,  genres:["indie","punk","alternative","folk","acoustic","emo"],    tier:"grassroots", email:"gigs@amershamarms.co.uk",        website:"amershamarms.co.uk",        description:"New Cross institution loved by students and musicians alike. Genuinely DIY and community-spirited." },
+  { id:19, name:"The Birds Nest",            area:"Deptford",        borough:"Lewisham",      capacity:150,  genres:["folk","acoustic","singer-songwriter","indie","bluegrass","country"], tier:"grassroots", email:"music@birdsnestpub.co.uk", website:"birdsnestpub.co.uk",       description:"Deptford's favourite acoustic music spot. Warm, unpretentious, and reliably great programming." },
+  { id:20, name:"The Ivy House",             area:"Nunhead",         borough:"Southwark",     capacity:120,  genres:["folk","acoustic","jazz","blues","singer-songwriter","roots"], tier:"grassroots", email:"music@ivyhousenunhead.com",    website:"ivyhousenunhead.com",       description:"Community-owned pub with a strong tradition of folk and acoustic music nights." },
+
+  // ── GRASSROOTS — NORTH LONDON ─────────────────────────────────────────────
+  { id:21, name:"Nambucca",                  area:"Holloway",        borough:"Islington",     capacity:200,  genres:["rock","punk","indie","metal","hardcore","emo"],          tier:"grassroots", email:"bookings@nambucca.co.uk",        website:"nambucca.co.uk",            description:"North London's beloved rock and punk institution. Raw, loud and utterly unpretentious." },
+  { id:22, name:"The Boston Arms",           area:"Tufnell Park",    borough:"Islington",     capacity:250,  genres:["indie","rock","punk","alternative","pop","folk rock"],   tier:"grassroots", email:"music@thebostonarms.com",        website:"thebostonarms.com",         description:"Iconic North London venue with a rich musical pedigree and a loyal local crowd." },
+  { id:23, name:"The Boogaloo",              area:"Highgate",        borough:"Haringey",      capacity:150,  genres:["americana","country","folk","rock","singer-songwriter","roots"], tier:"specialist", email:"bookings@theboogaloo.co.uk", website:"theboogaloo.co.uk",        description:"North London's spiritual home of Americana and roots music. Intimate and always excellent." },
+  { id:24, name:"The Unicorn",               area:"Camden",          borough:"Camden",        capacity:100,  genres:["folk","acoustic","singer-songwriter","blues","roots","country"], tier:"grassroots", email:"music@theunicorncamden.co.uk", website:"theunicorncamden.co.uk",  description:"Intimate Camden local for acoustic and folk. The crowd is attentive and the vibe is magical." },
+  { id:25, name:"The Star of Kings",         area:"Kings Cross",     borough:"Islington",     capacity:180,  genres:["indie","alternative","electronic","post-punk","experimental"], tier:"grassroots", email:"bookings@starofkings.co.uk",  website:"starofkings.co.uk",         description:"Atmospheric Kings Cross venue with moody lighting and a taste for the unconventional." },
+
+  // ── GRASSROOTS — WEST LONDON ──────────────────────────────────────────────
+  { id:26, name:"The Finsbury",              area:"Finsbury Park",   borough:"Islington",     capacity:200,  genres:["indie","rock","folk","alternative","singer-songwriter","pop"], tier:"grassroots", email:"gigs@thefinsbury.co.uk",      website:"thefinsbury.co.uk",         description:"Community pub venue with a reputation for giving emerging artists a real platform." },
+  { id:27, name:"The Lexington",             area:"Angel",           borough:"Islington",     capacity:200,  genres:["indie","alternative","americana","country","folk rock","psychedelic"], tier:"grassroots", email:"bookings@thelexington.co.uk", website:"thelexington.co.uk",      description:"Americana-inspired bar and music venue that punches well above its weight for bookings." },
+  { id:28, name:"The Harrison",              area:"Kings Cross",     borough:"Islington",     capacity:120,  genres:["singer-songwriter","folk","indie","acoustic","jazz","classical"], tier:"grassroots", email:"bookings@harrisonbar.co.uk", website:"harrisonbar.co.uk",       description:"Charming pub venue near Kings Cross with a long history of nurturing songwriters and performers." },
+  { id:29, name:"Spice of Life",             area:"Soho",            borough:"Westminster",   capacity:100,  genres:["jazz","folk","indie","singer-songwriter","acoustic","blues"], tier:"specialist", email:"music@spiceoflifesoho.com",   website:"spiceoflifesoho.com",       description:"Historic Soho pub with a wonderfully eclectic live music policy. Totally unpretentious." },
+  { id:30, name:"The Fighting Cocks",        area:"Kingston",        borough:"Kingston",      capacity:200,  genres:["metal","rock","punk","hardcore","indie","alternative"],    tier:"grassroots", email:"bookings@fightingcocksmusic.co.uk", website:"fightingcocksmusic.co.uk", description:"Kingston's leading rock and metal venue, deeply embedded in the local music community." },
+
+  // ── MID-SIZE ──────────────────────────────────────────────────────────────
+  { id:31, name:"Jazz Cafe",                 area:"Camden",          borough:"Camden",        capacity:440,  genres:["jazz","soul","hip-hop","funk","r&b","neo-soul","afrobeat"], tier:"mid",       email:"bookings@jazzcafelondon.com",    website:"jazzcafelondon.com",        description:"Camden's iconic venue bridging classic jazz with contemporary urban sounds. One of London's most important stages." },
+  { id:32, name:"Electric Brixton",          area:"Brixton",         borough:"Lambeth",       capacity:1400, genres:["electronic","pop","indie","alternative","dance","house","grime"], tier:"mid",  email:"bookings@electricbrixton.com",   website:"electricbrixton.com",       description:"Stunning art deco venue and one of South London's finest. Recently refurbished and sounding better than ever." },
+  { id:33, name:"Scala Kings Cross",         area:"Kings Cross",     borough:"Islington",     capacity:1100, genres:["electronic","indie","alternative","rock","hip-hop","metal"], tier:"mid",     email:"bookings@scala.co.uk",           website:"scala.co.uk",               description:"Grand Victorian building transformed into one of London's best-loved live music spaces." },
+  { id:34, name:"Underworld Camden",         area:"Camden",          borough:"Camden",        capacity:500,  genres:["metal","rock","punk","hardcore","alternative","industrial"], tier:"mid",      email:"bookings@theunderworldcamden.co.uk", website:"theunderworldcamden.co.uk", description:"Camden's premier destination for heavy music. Dark, loud and perfectly calibrated for the underground." },
+  { id:35, name:"Koko",                      area:"Camden",          borough:"Camden",        capacity:1500, genres:["pop","indie","rock","electronic","alternative","r&b"],     tier:"mid",       email:"bookings@koko.uk.com",           website:"koko.uk.com",               description:"Spectacular Grade II listed Victorian theatre. Newly restored to its former glory, one of London's crown jewels." },
+  { id:36, name:"The Garage",                area:"Highbury",        borough:"Islington",     capacity:600,  genres:["indie","rock","alternative","punk","electronic","grunge"], tier:"mid",      email:"bookings@thegarage.co.uk",       website:"thegarage.co.uk",           description:"North London's favourite mid-size venue with a legendary atmosphere and decades of history." },
+  { id:37, name:"Omeara London",             area:"London Bridge",   borough:"Southwark",     capacity:300,  genres:["indie","soul","r&b","electronic","pop","alternative","funk"], tier:"mid",    email:"bookings@omearalondon.com",      website:"omearalondon.com",          description:"Perfectly intimate railway arch venue run by Mercury Prize-winning artist Ben Howard's team." },
+  { id:38, name:"Village Underground",       area:"Shoreditch",      borough:"Hackney",       capacity:700,  genres:["electronic","indie","alternative","experimental","pop","techno"], tier:"mid",  email:"bookings@villageunderground.co.uk", website:"villageunderground.co.uk",  description:"Built from recycled London Underground carriages. One of Shoreditch's most iconic and beloved venues." },
+  { id:39, name:"Cargo",                     area:"Shoreditch",      borough:"Hackney",       capacity:600,  genres:["electronic","indie","house","techno","alternative","disco"], tier:"mid",     email:"bookings@cargo-london.com",      website:"cargo-london.com",          description:"Iconic Shoreditch venue under the railway arches. Multiple spaces and a real London institution." },
+  { id:40, name:"EartH Hackney",             area:"Hackney",         borough:"Hackney",       capacity:2000, genres:["indie","electronic","world","alternative","experimental","folk"], tier:"mid",  email:"bookings@earthackney.co.uk",     website:"earthackney.co.uk",         description:"Magnificent art deco former cinema now championing independent music on a grand scale." },
+  { id:41, name:"Bush Hall",                 area:"Shepherd's Bush", borough:"Hammersmith",   capacity:350,  genres:["indie","folk","pop","singer-songwriter","alternative","chamber pop"], tier:"mid",  email:"bookings@bushhall.co.uk",      website:"bushhall.co.uk",            description:"Ornate Edwardian ballroom with chandeliers and perfect acoustics. Intimate despite its grandeur." },
+  { id:42, name:"Shapes",                    area:"Hackney Wick",    borough:"Hackney",       capacity:600,  genres:["electronic","techno","house","experimental","dance","drum and bass"], tier:"mid", email:"bookings@shapeslondon.com",   website:"shapeslondon.com",          description:"Hackney Wick's creative hub in a converted warehouse. Exceptional sound system and late licensing." },
+  { id:43, name:"Tufnell Park Dome",         area:"Tufnell Park",    borough:"Islington",     capacity:400,  genres:["indie","rock","alternative","metal","punk","grunge"],     tier:"mid",       email:"bookings@thetufnellparkdome.com", website:"thetufnellparkdome.com",  description:"North London's historic dome. A proper rock venue with excellent production values." },
+  { id:44, name:"The Islington",             area:"Angel",           borough:"Islington",     capacity:200,  genres:["indie","alternative","electronic","pop","r&b","soul"],    tier:"grassroots",email:"bookings@theislington.com",      website:"theislington.com",          description:"Sleek underground venue in Angel. Focus on breaking new artists with strong promotion behind each show." },
+  { id:45, name:"Servant Jazz Quarters",     area:"Dalston",         borough:"Hackney",       capacity:100,  genres:["jazz","soul","funk","r&b","neo-soul","afrobeat"],          tier:"specialist",email:"book@servantjazzquarters.com",    website:"servantjazzquarters.com",   description:"Intimate basement jazz bar in Dalston. The perfect room for soulful, groovy sounds." },
+
+  // ── MID-SIZE / SPECIALIST (continued) ────────────────────────────────────
+  { id:46, name:"Iklectik Art Lab",          area:"Waterloo",        borough:"Lambeth",       capacity:150,  genres:["experimental","improvised","electronic","contemporary classical","world"], tier:"specialist", email:"info@iklectikartlab.com", website:"iklectikartlab.com",        description:"Converted railway arch arts space with a fearless programming ethos. Beloved by the avant-garde community." },
+  { id:47, name:"Rich Mix",                  area:"Shoreditch",      borough:"Tower Hamlets", capacity:200,  genres:["world","jazz","folk","indie","spoken word","experimental"], tier:"mid",     email:"music@richmix.org.uk",           website:"richmix.org.uk",            description:"Multicultural arts centre with excellent live music programming and a diverse, engaged audience." },
+  { id:48, name:"The Victoria",              area:"Dalston",         borough:"Hackney",       capacity:150,  genres:["indie","folk","singer-songwriter","acoustic","alternative","country"], tier:"grassroots", email:"book@thevictoriamusic.com", website:"thevictoriamusic.com",    description:"Cosy, friendly pub venue with a warm atmosphere. Reliably good bookings and an engaged crowd." },
+  { id:49, name:"The Lexington (Basement)",  area:"Angel",           borough:"Islington",     capacity:80,   genres:["country","americana","folk","singer-songwriter","roots"],  tier:"specialist",email:"bookings@thelexington.co.uk",   website:"thelexington.co.uk",        description:"The intimate basement room of The Lexington. Legendary for country and Americana in London." },
+  { id:50, name:"Total Refreshment Centre", area:"Stoke Newington",  borough:"Hackney",       capacity:120,  genres:["jazz","soul","funk","experimental","electronic","afrobeat"], tier:"specialist",email:"info@totalrefreshmentcentre.com", website:"totalrefreshmentcentre.com", description:"Independent arts venue and recording space. Champions the new wave of UK jazz and soul." },
+
+  // ── LARGE / MAJOR ─────────────────────────────────────────────────────────
+  { id:51, name:"O2 Academy Brixton",        area:"Brixton",         borough:"Lambeth",       capacity:4921, genres:["rock","pop","indie","electronic","hip-hop","r&b","dance"], tier:"large",    email:"bookings@o2academybrixton.co.uk", website:"o2academybrixton.co.uk",   description:"London's most iconic large venue. The Brixton Academy atmosphere is unlike anywhere else on earth." },
+  { id:52, name:"O2 Forum Kentish Town",     area:"Kentish Town",    borough:"Camden",        capacity:2300, genres:["indie","rock","pop","electronic","alternative","hip-hop"], tier:"large",    email:"bookings@o2forumkentishtown.co.uk", website:"o2forumkentishtown.co.uk", description:"North London's leading large venue. Beautiful Victorian architecture and superb production." },
+  { id:53, name:"The Roundhouse",            area:"Camden",          borough:"Camden",        capacity:3300, genres:["rock","indie","pop","electronic","alternative","world","classical"], tier:"large",  email:"bookings@roundhouse.org.uk",    website:"roundhouse.org.uk",         description:"Grade II listed Victorian engine shed. One of the world's truly great concert spaces." },
+  { id:54, name:"Eventim Apollo",            area:"Hammersmith",     borough:"Hammersmith",   capacity:5039, genres:["pop","rock","indie","soul","r&b","comedy","country"],     tier:"large",    email:"bookings@eventimapollo.com",     website:"eventimapollo.com",         description:"Art deco masterpiece. One of London's most beautiful and atmospheric large venues." },
+  { id:55, name:"Alexandra Palace",          area:"Wood Green",      borough:"Haringey",      capacity:10000,genres:["pop","rock","electronic","indie","hip-hop","dance","metal"], tier:"large",  email:"events@alexandrapalace.com",     website:"alexandrapalace.com",       description:"Magnificent Victorian palace with breathtaking panoramic views over London. An unforgettable venue." },
+  { id:56, name:"Barbican Centre",           area:"Barbican",        borough:"City",          capacity:1949, genres:["classical","jazz","world","experimental","electronic","contemporary"], tier:"large", email:"boxoffice@barbican.org.uk",   website:"barbican.org.uk",           description:"World-class arts centre in the City. One of Europe's most prestigious and adventurous programming institutions." },
+  { id:57, name:"Cadogan Hall",              area:"Chelsea",         borough:"Kensington",    capacity:950,  genres:["classical","jazz","folk","acoustic","singer-songwriter","world"], tier:"large", email:"info@cadoganhall.com",         website:"cadoganhall.com",           description:"Elegant Chelsea concert hall. Superb acoustics and a beautiful setting for more refined performances." },
+
+  // ── MORE GRASSROOTS / DIVERSE ─────────────────────────────────────────────
+  { id:58, name:"Thousand Island",           area:"Peckham",         borough:"Southwark",     capacity:200,  genres:["jazz","soul","r&b","neo-soul","funk","hip-hop","afrobeat"], tier:"grassroots", email:"info@thousandisland.co.uk", website:"thousandisland.co.uk",       description:"Peckham's lively music and arts bar. Part of South London's thriving jazz and soul scene." },
+  { id:59, name:"Bussey Building",           area:"Peckham",         borough:"Southwark",     capacity:500,  genres:["electronic","indie","alternative","house","techno","pop"], tier:"mid",     email:"bookings@busseybuilding.com",    website:"busseybuilding.com",        description:"Multi-storey warehouse venue in the heart of Peckham's creative district. Exceptional atmosphere." },
+  { id:60, name:"The Montague Arms",         area:"New Cross",       borough:"Lewisham",      capacity:150,  genres:["folk","punk","indie","acoustic","experimental","metal"],   tier:"grassroots", email:"music@montaguearms.com",     website:"montaguearms.com",          description:"Eccentric and beloved New Cross pub with decades of eclectic live music history." },
+  { id:61, name:"Ronnie's Bar (Upstairs)",   area:"Soho",            borough:"Westminster",   capacity:60,   genres:["jazz","acoustic","soul","blues","singer-songwriter"],      tier:"specialist",email:"upstairs@ronniescotts.co.uk",    website:"ronniescotts.co.uk",        description:"The intimate upstairs room at the legendary Ronnie Scott's. Perfect for emerging jazz artists." },
+  { id:62, name:"Dalston Jazz Bar",          area:"Dalston",         borough:"Hackney",       capacity:80,   genres:["jazz","soul","blues","funk","afrobeat","latin"],           tier:"specialist",email:"info@dalstonjazz.co.uk",          website:"dalstonjazz.co.uk",         description:"Late-night Dalston jazz bar with a commitment to live music every weekend." },
+  { id:63, name:"The Victoria Dalston",      area:"Dalston",         borough:"Hackney",       capacity:200,  genres:["indie","electronic","alternative","pop","r&b","grime"],   tier:"grassroots",email:"bookings@victoriandalston.com",  website:"victoriandalston.com",      description:"Central Dalston venue with a broad musical taste and a young, energetic crowd." },
+  { id:64, name:"Corsica Studios",           area:"Elephant and Castle", borough:"Southwark", capacity:400,  genres:["electronic","techno","house","experimental","noise","industrial"], tier:"mid", email:"bookings@corsicastudios.com",  website:"corsicastudios.com",        description:"Underground arts club in tunnels beneath Elephant & Castle. Legendary for underground electronic music." },
+  { id:65, name:"Bermondsey Social Club",    area:"Bermondsey",      borough:"Southwark",     capacity:200,  genres:["electronic","house","disco","soul","funk","jazz"],         tier:"grassroots",email:"bookings@bermondseysc.com",       website:"bermondseysc.com",          description:"Converted Bermondsey railway arch. Warm, eclectic and beloved by the local music community." },
+];
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PLAN CONFIG
+// ─────────────────────────────────────────────────────────────────────────────
+
+const PLANS = {
+  free:   { name:"Free",   price:0,  matchLimit:5,  emailLimit:3,  label:"£0/month",   color:"var(--muted)" },
+  artist: { name:"Artist", price:15, matchLimit:999, emailLimit:50, label:"£15/month", color:"var(--orangeHi)"  },
+  pro:    { name:"Pro",    price:39, matchLimit:999, emailLimit:999,label:"£39/month", color:"var(--green)"   },
+};
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STYLES — Deep charcoal + warm orange, Space Grotesk + DM Sans
+// ─────────────────────────────────────────────────────────────────────────────
+
+const CSS = `
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=DM+Sans:ital,opsz,wght@0,9..40,300..700;1,9..40,300..700&display=swap');
+
+*,*::before,*::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:        #0f0d0b;
+  --surface:   #161310;
+  --card:      #1c1815;
+  --card2:     #221e1a;
+  --border:    #2d2721;
+  --border2:   #3a332b;
+  --orange:    #c2580a;
+  --orange2:   #e06b12;
+  --orangeHi:  #f5a623;
+  --orangeDim: rgba(194,88,10,.12);
+  --orangeGlow:rgba(194,88,10,.22);
+  --green:     #4ade80;
+  --greenDim:  rgba(74,222,128,.1);
+  --red:       #f87171;
+  --redDim:    rgba(248,113,113,.1);
+  --blue:      #93c5fd;
+  --blueDim:   rgba(147,197,253,.1);
+  --text:      #ede8e1;
+  --text2:     #8a7f74;
+  --text3:     #4a443d;
+  --fd: 'Space Grotesk', sans-serif;
+  --fb: 'DM Sans', sans-serif;
+  --r: 10px; --r2: 14px; --r3: 20px;
+  --shadow: 0 2px 8px rgba(0,0,0,.5);
+  --shadow-md: 0 4px 16px rgba(0,0,0,.5);
+  --shadow-lg: 0 8px 32px rgba(0,0,0,.6);
+  --shadow-glow: 0 0 32px rgba(194,88,10,.25);
+  --gradient-primary: linear-gradient(135deg, #c2580a, #e06b12);
+}
+
+html { scroll-behavior: smooth; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--fb);
+  font-size: 14px;
+  line-height: 1.6;
+  letter-spacing: -0.01em;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
+}
+h1,h2,h3,h4,h5 {
+  font-family: var(--fd);
+  line-height: 1.1;
+  letter-spacing: -0.03em;
+}
+a { color: inherit; text-decoration: none; }
+button { cursor: pointer; font-family: var(--fb); letter-spacing: -0.01em; }
+input, textarea, select { font-family: var(--fb); letter-spacing: -0.01em; }
+
+::-webkit-scrollbar { width: 3px; height: 3px; }
+::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
 
 /* ── Buttons ── */
-.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:10px 22px;border-radius:var(--r);font-family:var(--font-d);font-size:13px;font-weight:700;border:none;transition:all .2s;white-space:nowrap;letter-spacing:.02em}
-.btn-gold{background:var(--gold);color:#080b14}
-.btn-gold:hover{background:var(--gold2);transform:translateY(-1px);box-shadow:0 8px 32px var(--goldGlow)}
-.btn-outline{background:transparent;color:var(--text);border:1px solid var(--border2)}
-.btn-outline:hover{border-color:var(--gold);color:var(--gold);background:var(--goldDim)}
-.btn-ghost{background:transparent;color:var(--text2);padding:8px 14px;border:none}
-.btn-ghost:hover{color:var(--text);background:rgba(255,255,255,.05)}
-.btn-emerald{background:var(--emerald);color:#080b14}
-.btn-emerald:hover{filter:brightness(1.1);transform:translateY(-1px)}
-.btn-danger{background:var(--crimsonDim);color:var(--crimson);border:1px solid rgba(240,83,101,.2)}
-.btn-danger:hover{background:rgba(240,83,101,.18)}
-.btn-sm{padding:6px 14px;font-size:12px}
-.btn-lg{padding:14px 36px;font-size:15px}
-.btn-xl{padding:18px 48px;font-size:16px}
-.btn-block{width:100%}
-.btn:disabled{opacity:.35;cursor:not-allowed;transform:none!important;box-shadow:none!important}
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  padding: 10px 20px; border-radius: var(--r); font-family: var(--fd);
+  font-size: 13px; font-weight: 600; border: none; transition: all .18s;
+  white-space: nowrap; letter-spacing: -0.01em; cursor: pointer;
+}
+.btn-primary {
+  background: var(--gradient-primary);
+  color: #fff;
+  box-shadow: 0 1px 3px rgba(0,0,0,.4);
+}
+.btn-primary:hover {
+  filter: brightness(1.12);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-glow);
+}
+.btn-outline {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border2);
+}
+.btn-outline:hover { border-color: var(--orange2); color: var(--orangeHi); }
+.btn-ghost { background: transparent; color: var(--text2); padding: 8px 14px; border: none; }
+.btn-ghost:hover { color: var(--text); background: rgba(255,255,255,.04); }
+.btn-danger { background: var(--redDim); color: var(--red); border: 1px solid rgba(248,113,113,.2); }
+.btn-danger:hover { background: rgba(248,113,113,.18); }
+.btn-sm { padding: 6px 14px; font-size: 12px; }
+.btn-lg { padding: 13px 32px; font-size: 15px; }
+.btn-xl { padding: 16px 44px; font-size: 15px; }
+.btn-block { width: 100%; }
+.btn:disabled { opacity: .35; cursor: not-allowed; transform: none !important; box-shadow: none !important; }
 
 /* ── Inputs ── */
-.field{display:flex;flex-direction:column;gap:5px}
-.label{font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.09em;font-family:var(--font-d)}
-.inp{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:11px 14px;color:var(--text);font-size:14px;outline:none;transition:border-color .18s,box-shadow .18s;width:100%}
-.inp:focus{border-color:var(--gold);box-shadow:0 0 0 3px var(--goldDim)}
-.inp::placeholder{color:var(--text3)}
-textarea.inp{resize:vertical;min-height:90px}
-select.inp{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' fill='none'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%234a5270' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 14px center;padding-right:36px}
+.field { display: flex; flex-direction: column; gap: 5px; }
+.label {
+  font-size: 11px; font-weight: 600; color: var(--text3);
+  text-transform: uppercase; letter-spacing: .08em; font-family: var(--fd);
+}
+.inp {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--r); padding: 11px 13px; color: var(--text);
+  font-size: 14px; outline: none; width: 100%;
+  transition: border-color .15s, box-shadow .15s;
+}
+.inp:focus { border-color: var(--orange); box-shadow: 0 0 0 3px var(--orangeDim); }
+.inp::placeholder { color: var(--text3); }
+textarea.inp { resize: vertical; min-height: 80px; }
+select.inp {
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='11' height='7'%3E%3Cpath d='M1 1l4.5 4.5L10 1' stroke='%234a443d' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 13px center; padding-right: 34px;
+}
 
 /* ── Cards ── */
-.card{background:var(--card);border:1px solid var(--border);border-radius:var(--r2);padding:24px}
-.card2{background:var(--card2);border:1px solid var(--border);border-radius:var(--r);padding:16px}
-.glass{background:rgba(17,24,39,.7);backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,.06)}
+.card {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--r2); padding: 22px;
+  box-shadow: var(--shadow);
+}
+.card-hover {
+  transition: transform 0.2s ease-out, box-shadow 0.2s ease-out;
+}
+.card-hover:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-lg);
+}
+.card2 { background: var(--card2); border: 1px solid var(--border); border-radius: var(--r); padding: 14px; }
 
 /* ── Badges ── */
-.badge{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:99px;font-size:10px;font-weight:700;font-family:var(--font-d);letter-spacing:.06em;text-transform:uppercase}
-.b-gold{background:var(--goldDim);color:var(--gold)}
-.b-emerald{background:var(--emeraldDim);color:var(--emerald)}
-.b-crimson{background:var(--crimsonDim);color:var(--crimson)}
-.b-sky{background:var(--skyDim);color:var(--sky)}
-.b-lavender{background:rgba(167,139,250,.1);color:var(--lavender)}
-.b-dim{background:rgba(255,255,255,.05);color:var(--text2)}
-.tag{display:inline-block;background:rgba(255,255,255,.05);color:var(--text2);border-radius:6px;padding:2px 8px;font-size:11px;margin:2px}
+.badge {
+  display: inline-flex; align-items: center; gap: 3px;
+  padding: 3px 9px; border-radius: 99px;
+  font-size: 10px; font-weight: 600; font-family: var(--fd);
+  letter-spacing: .04em; text-transform: uppercase; white-space: nowrap;
+}
+.b-orange { background: var(--orangeDim); color: var(--orangeHi); }
+.b-green  { background: var(--greenDim);  color: var(--green); }
+.b-red    { background: var(--redDim);    color: var(--red); }
+.b-blue   { background: var(--blueDim);   color: var(--blue); }
+.b-muted  { background: rgba(255,255,255,.05); color: var(--text2); }
+.tag { display:inline-block; background: rgba(255,255,255,.04); color: var(--text2); border-radius:6px; padding:2px 8px; font-size:11px; margin:2px; }
 
 /* ── Layout ── */
-.app-shell{display:flex;min-height:100vh}
-.sidebar{width:234px;flex-shrink:0;background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;position:sticky;top:0;height:100vh;overflow-y:auto}
-.main{flex:1;overflow-y:auto;min-height:100vh}
-.page{padding:40px 44px;max-width:1140px}
+.shell { display: flex; min-height: 100vh; }
+.sidebar {
+  width: 224px; flex-shrink: 0;
+  background: var(--surface); border-right: 1px solid var(--border);
+  display: flex; flex-direction: column;
+  position: sticky; top: 0; height: 100vh; overflow-y: auto;
+}
+.main { flex: 1; overflow-y: auto; min-height: 100vh; }
+.page { padding: 40px; max-width: 1100px; }
 
-/* ── Nav ── */
-.nav-logo{padding:26px 20px 22px;font-family:var(--font-d);font-size:20px;font-weight:800;letter-spacing:-.02em}
-.nav-logo em{color:var(--gold);font-style:normal}
-.nav-logo small{display:block;font-size:10px;font-weight:500;color:var(--text3);letter-spacing:.06em;margin-top:3px;font-family:var(--font-b);text-transform:uppercase}
-.nav-sect{padding:8px 14px 4px;font-size:9px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.12em;font-family:var(--font-d)}
-.nav-item{display:flex;align-items:center;gap:10px;padding:9px 14px;color:var(--text2);border-radius:var(--r);margin:1px 8px;font-size:13px;font-weight:500;border:none;background:none;width:calc(100% - 16px);text-align:left;transition:all .15s;font-family:var(--font-b)}
-.nav-item:hover{color:var(--text);background:rgba(255,255,255,.04)}
-.nav-item.active{color:var(--gold);background:var(--goldDim);font-weight:600}
-.nav-item .ni{font-size:15px;width:20px;text-align:center;flex-shrink:0}
-.nav-div{border:none;border-top:1px solid var(--border);margin:8px 16px}
+/* ── Sidebar nav ── */
+.logo { padding: 24px 18px 18px; font-family: var(--fd); font-size: 18px; font-weight: 700; letter-spacing: -0.03em; }
+.logo em { color: var(--orangeHi); font-style: normal; }
+.logo small { display:block; font-size:10px; font-weight:400; color:var(--text3); letter-spacing:.04em; margin-top:3px; font-family:var(--fb); }
+.nav-sect { padding: 10px 16px 4px; font-size: 9px; font-weight: 600; color: var(--text3); text-transform: uppercase; letter-spacing: .1em; font-family: var(--fd); }
+.nav-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 12px; margin: 1px 8px; width: calc(100% - 16px);
+  color: var(--text2); border-radius: var(--r); background: none;
+  border: none; text-align: left; font-size: 13px; font-weight: 500;
+  font-family: var(--fb); transition: all .13s; cursor: pointer;
+  letter-spacing: -0.01em;
+}
+.nav-item:hover { color: var(--text); background: rgba(255,255,255,.04); }
+.nav-item.active { color: var(--orangeHi); background: var(--orangeDim); font-weight: 600; }
+.nav-item .ni { font-size: 15px; width: 20px; text-align: center; flex-shrink: 0; }
+.nav-divider { border: none; border-top: 1px solid var(--border); margin: 8px 16px; }
 
-/* ── Page headers ── */
-.ph{margin-bottom:30px}
-.ph h1{font-size:26px;font-weight:800;letter-spacing:-.02em;margin-bottom:4px}
-.ph p{color:var(--text2);font-size:14px}
+/* ── Page header ── */
+.ph { margin-bottom: 28px; }
+.ph h1 { font-size: 26px; font-weight: 700; margin-bottom: 4px; }
+.ph p { color: var(--text2); font-size: 14px; }
 
 /* ── Grids ── */
-.g2{display:grid;grid-template-columns:1fr 1fr;gap:20px}
-.g3{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
-.g4{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+.g2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.g3 { display: grid; grid-template-columns: repeat(3,1fr); gap: 16px; }
+.g4 { display: grid; grid-template-columns: repeat(4,1fr); gap: 13px; }
 
 /* ── Stats ── */
-.stat{background:var(--card);border:1px solid var(--border);border-radius:var(--r2);padding:20px 22px;position:relative;overflow:hidden}
-.stat::before{content:'';position:absolute;inset:0;background:linear-gradient(135deg,var(--goldDim) 0%,transparent 60%);opacity:0;transition:opacity .3s}
-.stat:hover::before{opacity:1}
-.stat-n{font-family:var(--font-d);font-size:32px;font-weight:800;line-height:1;letter-spacing:-.02em}
-.stat-l{color:var(--text2);font-size:12px;margin-top:6px;font-weight:500}
-.stat-d{font-size:11px;margin-top:6px;color:var(--text3)}
+.stat {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--r2); padding: 20px 22px;
+  box-shadow: var(--shadow);
+  transition: transform 0.2s ease-out, box-shadow 0.2s ease-out;
+}
+.stat:hover { transform: translateY(-2px); box-shadow: var(--shadow-lg); }
+.stat-n { font-family: var(--fd); font-size: 30px; font-weight: 700; line-height: 1; letter-spacing: -0.03em; }
+.stat-l { color: var(--text2); font-size: 12px; margin-top: 5px; font-weight: 500; }
+.stat-d { font-size: 11px; margin-top: 4px; color: var(--text3); }
 
-/* ── Venue cards ── */
-.vcard{background:var(--card);border:1px solid var(--border);border-radius:var(--r2);padding:20px;display:flex;gap:16px;align-items:flex-start;transition:border-color .2s,transform .15s,box-shadow .2s;cursor:default}
-.vcard:hover{border-color:rgba(232,184,75,.3);transform:translateY(-2px);box-shadow:0 8px 32px rgba(0,0,0,.3)}
-.score-ring{width:52px;height:52px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-family:var(--font-d);font-weight:800;font-size:15px;flex-shrink:0;position:relative}
+/* ── Venue card ── */
+.vcard {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--r2); padding: 18px; display: flex;
+  gap: 14px; align-items: flex-start;
+  transition: border-color .18s, transform .18s, box-shadow .18s;
+  box-shadow: var(--shadow);
+}
+.vcard:hover { border-color: rgba(194,88,10,.3); transform: translateY(-2px); box-shadow: var(--shadow-lg); }
+.score-ring {
+  width: 48px; height: 48px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--fd); font-weight: 700; font-size: 14px; flex-shrink: 0;
+}
 
 /* ── Modals ── */
-.overlay{position:fixed;inset:0;background:rgba(0,0,0,.8);backdrop-filter:blur(8px);display:flex;align-items:center;justify-content:center;z-index:1000;padding:20px;animation:fadeOverlay .2s ease}
-@keyframes fadeOverlay{from{opacity:0}to{opacity:1}}
-.modal{background:var(--card);border:1px solid var(--border2);border-radius:var(--r3);width:100%;max-width:520px;max-height:92vh;overflow-y:auto;padding:36px;position:relative;animation:slideModal .25s ease}
-@keyframes slideModal{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
-.modal-x{position:absolute;top:18px;right:18px;background:var(--border);border:none;color:var(--text2);border-radius:8px;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-size:16px;cursor:pointer;transition:all .15s}
-.modal-x:hover{color:var(--text);background:var(--border2)}
+.overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,.8);
+  backdrop-filter: blur(12px); display: flex; align-items: center;
+  justify-content: center; z-index: 1000; padding: 20px;
+  animation: fadeIn .18s ease;
+}
+.modal {
+  background: var(--card); border: 1px solid var(--border2);
+  border-radius: var(--r3); width: 100%; max-width: 500px;
+  max-height: 90vh; overflow-y: auto; padding: 32px;
+  position: relative; animation: slideUp .22s ease;
+  box-shadow: var(--shadow-lg);
+}
+.modal-x {
+  position: absolute; top: 16px; right: 16px; width: 28px; height: 28px;
+  background: var(--border); border: none; color: var(--text2);
+  border-radius: 7px; font-size: 16px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; transition: all .13s;
+}
+.modal-x:hover { color: var(--text); background: var(--border2); }
 
 /* ── Toast ── */
-.toast{position:fixed;bottom:24px;right:24px;background:var(--card2);border:1px solid var(--border2);border-radius:14px;padding:14px 20px;font-size:13px;z-index:2000;display:flex;align-items:center;gap:10px;box-shadow:0 16px 48px rgba(0,0,0,.6);animation:toastIn .3s ease;max-width:360px}
-@keyframes toastIn{from{opacity:0;transform:translateY(12px) scale(.96)}to{opacity:1;transform:translateY(0) scale(1)}}
-.toast-ok{border-color:var(--emerald)}
-.toast-err{border-color:var(--crimson)}
-.toast-info{border-color:var(--gold)}
+.toast {
+  position: fixed; bottom: 22px; right: 22px;
+  background: var(--card2); border: 1px solid var(--border2);
+  border-radius: 12px; padding: 13px 18px; font-size: 13px;
+  z-index: 2000; display: flex; align-items: center; gap: 10px;
+  box-shadow: var(--shadow-lg); animation: slideUp .25s ease; max-width: 340px;
+}
 
 /* ── Animations ── */
-.fade{animation:pageIn .3s ease}
-@keyframes pageIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
-.shimmer{background:linear-gradient(90deg,var(--card) 25%,var(--border) 50%,var(--card) 75%);background-size:200% 100%;animation:shim 1.6s infinite;border-radius:8px}
-@keyframes shim{0%{background-position:200% 0}100%{background-position:-200% 0}}
+.animate-fade-in { animation: fadeIn 0.4s ease-out both; }
+.animate-slide-up { animation: slideUp 0.5s ease-out both; }
+.fade { animation: fadeIn .25s ease; }
 
-/* ── Progress ── */
-.pbar{height:4px;background:var(--border);border-radius:2px;overflow:hidden}
-.pfill{height:100%;background:linear-gradient(90deg,var(--gold),var(--gold2));border-radius:2px;transition:width .5s ease}
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(12px); filter: blur(4px); }
+  to   { opacity: 1; transform: translateY(0);    filter: blur(0); }
+}
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(20px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position:  200% 0; }
+}
 
-/* ── Step dots ── */
-.step-dots{display:flex;gap:6px;margin-bottom:32px}
-.step-dot{height:3px;border-radius:2px;background:var(--border);transition:all .3s;flex:1}
-.step-dot.done{background:var(--emerald)}
-.step-dot.active{background:var(--gold);flex:2}
+/* ── Shimmer / skeleton ── */
+.shimmer {
+  background: linear-gradient(90deg, var(--card) 25%, var(--border) 50%, var(--card) 75%);
+  background-size: 200% 100%; animation: shimmer 1.5s infinite; border-radius: var(--r);
+}
+
+/* ── Progress bar ── */
+.pbar { height: 3px; background: var(--border); border-radius: 2px; overflow: hidden; }
+.pfill { height: 100%; background: var(--gradient-primary); border-radius: 2px; transition: width .4s ease; }
+
+/* ── Text gradient ── */
+.text-gradient {
+  background: var(--gradient-primary);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* ── Onboarding steps ── */
+.steps { display: flex; gap: 6px; margin-bottom: 28px; }
+.step-dot { height: 2px; flex: 1; background: var(--border); border-radius: 1px; transition: all .25s; }
+.step-dot.done { background: var(--green); }
+.step-dot.cur  { background: var(--orangeHi); flex: 2; }
 
 /* ── Table ── */
-.tbl{width:100%;border-collapse:collapse}
-.tbl th{padding:11px 16px;text-align:left;color:var(--text3);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.09em;font-family:var(--font-d);border-bottom:1px solid var(--border)}
-.tbl td{padding:13px 16px;border-bottom:1px solid var(--border);font-size:13px;vertical-align:middle}
-.tbl tr:last-child td{border-bottom:none}
-.tbl tr:hover td{background:rgba(255,255,255,.015)}
+.tbl { width: 100%; border-collapse: collapse; }
+.tbl th {
+  padding: 10px 14px; text-align: left; color: var(--text3);
+  font-size: 10px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: .08em; border-bottom: 1px solid var(--border); font-family: var(--fd);
+}
+.tbl td { padding: 12px 14px; border-bottom: 1px solid var(--border); font-size: 13px; vertical-align: middle; }
+.tbl tr:last-child td { border-bottom: none; }
+.tbl tr:hover td { background: rgba(255,255,255,.012); }
 
 /* ── Divider ── */
-hr.div{border:none;border-top:1px solid var(--border);margin:20px 0}
+hr.div { border: none; border-top: 1px solid var(--border); margin: 18px 0; }
 
 /* ── Upgrade banner ── */
-.up-banner{background:linear-gradient(135deg,rgba(232,184,75,.08),rgba(45,212,160,.05));border:1px solid rgba(232,184,75,.2);border-radius:var(--r2);padding:18px 22px;display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:24px}
+.up-banner {
+  background: linear-gradient(135deg, rgba(194,88,10,.08), rgba(224,107,18,.04));
+  border: 1px solid rgba(194,88,10,.2); border-radius: var(--r2);
+  padding: 16px 20px; display: flex; align-items: center;
+  justify-content: space-between; gap: 14px; margin-bottom: 22px;
+  box-shadow: var(--shadow);
+}
 
-/* ── Social buttons ── */
-.social-btn{display:flex;align-items:center;justify-content:center;gap:10px;width:100%;padding:12px;border-radius:var(--r);border:1px solid var(--border2);background:var(--surface);color:var(--text);font-size:14px;font-weight:500;cursor:pointer;transition:all .15s;font-family:var(--font-b)}
-.social-btn:hover{border-color:var(--gold);background:var(--goldDim)}
+/* ── Social auth button ── */
+.social-btn {
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  width: 100%; padding: 11px; border-radius: var(--r);
+  border: 1px solid var(--border2); background: var(--surface);
+  color: var(--text); font-size: 14px; font-weight: 500; cursor: pointer;
+  transition: all .15s; font-family: var(--fb);
+}
+.social-btn:hover { border-color: var(--orange); background: var(--orangeDim); }
+
+/* ── Demo mode ── */
+.demo-pill {
+  background: rgba(147,197,253,.07); border: 1px solid rgba(147,197,253,.18);
+  border-radius: var(--r); padding: 8px 14px; font-size: 12px;
+  color: var(--blue); display: flex; align-items: center; gap: 7px;
+}
 
 /* ── Landing ── */
-.l-grid{position:absolute;inset:0;background-image:linear-gradient(rgba(232,184,75,.04) 1px,transparent 1px),linear-gradient(90deg,rgba(232,184,75,.04) 1px,transparent 1px);background-size:80px 80px;mask-image:radial-gradient(ellipse 80% 60% at 50% 0%,black 30%,transparent 100%)}
-.l-glow1{position:absolute;width:800px;height:500px;background:radial-gradient(ellipse,rgba(232,184,75,.07) 0%,transparent 65%);left:50%;top:-100px;transform:translateX(-50%);pointer-events:none}
-.l-glow2{position:absolute;width:400px;height:400px;background:radial-gradient(ellipse,rgba(45,212,160,.05) 0%,transparent 70%);right:-80px;top:40%;pointer-events:none}
-.l-glow3{position:absolute;width:300px;height:300px;background:radial-gradient(ellipse,rgba(91,156,246,.04) 0%,transparent 70%);left:-60px;top:60%;pointer-events:none}
+.l-grid {
+  position: absolute; inset: 0;
+  background-image:
+    linear-gradient(rgba(194,88,10,.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(194,88,10,.04) 1px, transparent 1px);
+  background-size: 64px 64px;
+  mask-image: radial-gradient(ellipse 70% 55% at 50% 0%, black 20%, transparent 100%);
+  pointer-events: none;
+}
+.l-glow {
+  position: absolute; width: 720px; height: 420px; left: 50%; top: -100px;
+  background: radial-gradient(ellipse, rgba(194,88,10,.07) 0%, transparent 65%);
+  transform: translateX(-50%); pointer-events: none;
+}
 
-/* ── Plan widget ── */
-.plan-widget{background:linear-gradient(135deg,var(--goldDim),transparent);border:1px solid rgba(232,184,75,.18);border-radius:var(--r2);padding:14px}
+/* ── Plan sidebar widget ── */
+.plan-box { margin: auto 0 0; padding: 14px 10px; }
+.plan-inner {
+  background: linear-gradient(135deg, var(--orangeDim), transparent);
+  border: 1px solid rgba(194,88,10,.18);
+  border-radius: var(--r2); padding: 13px;
+}
 
-/* ── Demo banner ── */
-.demo-banner{background:linear-gradient(135deg,rgba(167,139,250,.1),rgba(91,156,246,.08));border:1px solid rgba(167,139,250,.2);border-radius:var(--r);padding:10px 16px;font-size:12px;color:var(--lavender);margin-bottom:20px;display:flex;align-items:center;gap:8px}
+/* ── Animate glow ── */
+.animate-glow { box-shadow: var(--shadow-glow); }
 
-@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
-@keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}
+@media (max-width: 768px) {
+  .sidebar { display: none; }
+  .page { padding: 18px 14px; }
+  .g2,.g3,.g4 { grid-template-columns: 1fr; }
+  .ph h1 { font-size: 20px; }
+}
 
-@media(max-width:768px){
-  .sidebar{display:none}
-  .page{padding:20px 16px}
-  .g2,.g3,.g4{grid-template-columns:1fr}
-  .ph h1{font-size:22px}
+/* ── Mobile bottom nav ── */
+.mob-nav {
+  position: fixed; bottom: 0; left: 0; right: 0;
+  background: var(--surface); border-top: 1px solid var(--border);
+  display: none; z-index: 100; padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+@media (max-width: 768px) { .mob-nav { display: flex; } }
+.mob-nav-item {
+  flex: 1; padding: 10px 0; background: none; border: none;
+  color: var(--text3); display: flex; flex-direction: column;
+  align-items: center; gap: 2px; font-size: 9px;
+  font-family: var(--fd); font-weight: 600; cursor: pointer;
+  letter-spacing: .04em; text-transform: uppercase; transition: color .13s;
+}
+.mob-nav-item.active { color: var(--orangeHi); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 `;
 
-// ─── UK LONDON VENUES DATABASE ────────────────────────────────────────────────
-const UK_VENUES = [
-  // Iconic / Historic
-  {id:1,name:"100 Club",area:"Oxford Street",city:"London",capacity:350,genres:["jazz","blues","punk","indie","rock"],website:"the100club.co.uk",email:"info@the100club.co.uk",tier:"iconic",description:"One of London's most legendary venues, hosting since 1942."},
-  {id:2,name:"Ronnie Scott's Jazz Club",area:"Soho",city:"London",capacity:200,genres:["jazz","blues","soul","funk"],website:"ronniescotts.co.uk",email:"bookings@ronniescotts.co.uk",tier:"iconic",description:"World-famous jazz club in the heart of Soho since 1959."},
-  {id:3,name:"The Marquee Club",area:"Soho",city:"London",capacity:700,genres:["rock","indie","metal","alternative"],website:"marqueeclub.com",email:"bookings@marqueeclub.com",tier:"iconic",description:"Legendary venue that launched the careers of The Rolling Stones."},
-  // Grassroots / Small
-  {id:4,name:"The Windmill Brixton",area:"Brixton",city:"London",capacity:150,genres:["indie","punk","alternative","experimental","post-punk"],website:"windmillbrixton.co.uk",email:"bookings@windmillbrixton.co.uk",tier:"grassroots",description:"Beloved grassroots venue championing new and emerging artists."},
-  {id:5,name:"Servant Jazz Quarters",area:"Dalston",city:"London",capacity:100,genres:["jazz","soul","funk","r&b","neo-soul"],website:"servantjazzquarters.com",email:"book@servantjazzquarters.com",tier:"grassroots",description:"Intimate basement jazz bar in the heart of Dalston."},
-  {id:6,name:"The Finsbury",area:"Finsbury Park",city:"London",capacity:200,genres:["indie","rock","folk","alternative","singer-songwriter"],website:"thefinsbury.co.uk",email:"gigs@thefinsbury.co.uk",tier:"grassroots",description:"Community pub venue known for championing local talent."},
-  {id:7,name:"Moth Club",area:"Hackney",city:"London",capacity:300,genres:["indie","electronic","alternative","experimental","pop"],website:"mothclub.co.uk",email:"bookings@mothclub.co.uk",tier:"grassroots",description:"Art deco venue in Hackney with a strong community ethos."},
-  {id:8,name:"Vortex Jazz Club",area:"Dalston",city:"London",capacity:120,genres:["jazz","experimental","avant-garde","world","free jazz"],website:"vortexjazz.co.uk",email:"info@vortexjazz.co.uk",tier:"grassroots",description:"Premier destination for contemporary and experimental jazz."},
-  {id:9,name:"Cafe Oto",area:"Dalston",city:"London",capacity:120,genres:["experimental","noise","electronic","free jazz","avant-garde"],website:"cafeoto.co.uk",email:"info@cafeoto.co.uk",tier:"grassroots",description:"Internationally celebrated venue for experimental and adventurous music."},
-  {id:10,name:"The Lexington",area:"Angel",city:"London",capacity:200,genres:["indie","alternative","americana","country","folk rock"],website:"thelexington.co.uk",email:"bookings@thelexington.co.uk",tier:"grassroots",description:"Americana-inspired bar and music venue in Angel."},
-  {id:11,name:"Oslo Hackney",area:"Hackney Central",city:"London",capacity:250,genres:["indie","electronic","pop","r&b","alternative"],website:"oslohackney.com",email:"music@oslohackney.com",tier:"grassroots",description:"Stylish venue above Hackney Central station."},
-  {id:12,name:"The Victoria",area:"Dalston",city:"London",capacity:150,genres:["indie","folk","singer-songwriter","acoustic","alternative"],website:"thevictoriamusic.com",email:"book@thevictoriamusic.com",tier:"grassroots",description:"Cosy pub venue with a warm atmosphere for original music."},
-  {id:13,name:"Paper Dress Vintage",area:"Hackney",city:"London",capacity:100,genres:["indie","pop","electronic","alternative","art pop"],website:"paperdressvintage.co.uk",email:"events@paperdressvintage.co.uk",tier:"grassroots",description:"Boutique venue known for eclectic and creative programming."},
-  {id:14,name:"The Harrison",area:"Kings Cross",city:"London",capacity:120,genres:["singer-songwriter","folk","indie","acoustic","jazz"],website:"harrisonbar.co.uk",email:"bookings@harrisonbar.co.uk",tier:"grassroots",description:"Charming pub venue near Kings Cross with regular live music."},
-  {id:15,name:"The Sebright Arms",area:"Bethnal Green",city:"London",capacity:200,genres:["indie","alternative","experimental","electronic","post-punk"],website:"sebrightarms.co.uk",email:"gigs@sebrightarms.co.uk",tier:"grassroots",description:"East London institution for emerging and DIY artists."},
-  {id:16,name:"Nambucca",area:"Holloway",city:"London",capacity:200,genres:["rock","punk","indie","metal","hardcore"],website:"nambucca.co.uk",email:"bookings@nambucca.co.uk",tier:"grassroots",description:"Beloved North London rock and punk venue."},
-  {id:17,name:"The Boston Arms",area:"Tufnell Park",city:"London",capacity:250,genres:["indie","rock","punk","alternative","pop"],website:"thebostonarms.com",email:"music@thebostonarms.com",tier:"grassroots",description:"Iconic North London venue with a rich musical heritage."},
-  {id:18,name:"The Half Moon Putney",area:"Putney",city:"London",capacity:200,genres:["blues","rock","indie","americana","folk"],website:"halfmoon.co.uk",email:"bookings@halfmoon.co.uk",tier:"grassroots",description:"Historic South London venue with over 50 years of live music."},
-  {id:19,name:"Hootananny Brixton",area:"Brixton",city:"London",capacity:400,genres:["reggae","world","folk","acoustic","indie"],website:"hootanannybrixton.co.uk",email:"gigs@hootanannybrixton.co.uk",tier:"grassroots",description:"Vibrant Brixton venue celebrating diverse global music."},
-  {id:20,name:"The Islington",area:"Angel",city:"London",capacity:200,genres:["indie","alternative","electronic","pop","r&b"],website:"theislington.com",email:"bookings@theislington.com",tier:"grassroots",description:"Sleek venue in Angel with a focus on breaking new artists."},
-  // Mid-size
-  {id:21,name:"Jazz Cafe",area:"Camden",city:"London",capacity:440,genres:["jazz","soul","hip-hop","funk","r&b","neo-soul"],website:"jazzcafelondon.com",email:"bookings@jazzcafelondon.com",tier:"mid",description:"Camden's iconic venue bridging jazz with contemporary urban sounds."},
-  {id:22,name:"Electric Brixton",area:"Brixton",city:"London",capacity:1400,genres:["electronic","pop","indie","alternative","dance"],website:"electricbrixton.com",email:"bookings@electricbrixton.com",tier:"mid",description:"Stunning art deco venue, one of South London's finest."},
-  {id:23,name:"Scala Kings Cross",area:"Kings Cross",city:"London",capacity:1100,genres:["electronic","indie","alternative","rock","hip-hop"],website:"scala.co.uk",email:"bookings@scala.co.uk",tier:"mid",description:"Grand Victorian venue that's been a music landmark for decades."},
-  {id:24,name:"Underworld Camden",area:"Camden",city:"London",capacity:500,genres:["metal","rock","punk","hardcore","alternative"],website:"theunderworldcamden.co.uk",email:"bookings@theunderworldcamden.co.uk",tier:"mid",description:"Camden's premier heavy music venue in the heart of the market."},
-  {id:25,name:"Jazz at Ronnie's Upstairs",area:"Soho",city:"London",capacity:60,genres:["jazz","acoustic","singer-songwriter","soul"],website:"ronniescotts.co.uk",email:"upstairs@ronniescotts.co.uk",tier:"mid",description:"Intimate upstairs room at the legendary Ronnie Scott's."},
-  {id:26,name:"The Garage",area:"Highbury",city:"London",capacity:600,genres:["indie","rock","alternative","punk","electronic"],website:"thegarage.co.uk",email:"bookings@thegarage.co.uk",tier:"mid",description:"North London's favourite mid-size venue with a legendary atmosphere."},
-  {id:27,name:"Koko",area:"Camden",city:"London",capacity:1500,genres:["pop","indie","rock","electronic","alternative"],website:"koko.uk.com",email:"bookings@koko.uk.com",tier:"mid",description:"Spectacular Victorian theatre turned music venue in Camden."},
-  {id:28,name:"Omeara London",area:"London Bridge",city:"London",capacity:300,genres:["indie","soul","r&b","electronic","pop","alternative"],website:"omearalondon.com",email:"bookings@omearalondon.com",tier:"mid",description:"Intimate venue under the railway arches near London Bridge."},
-  {id:29,name:"EartH Hackney",area:"Hackney",city:"London",capacity:2000,genres:["indie","electronic","world","alternative","experimental"],website:"earthackney.co.uk",email:"bookings@earthackney.co.uk",tier:"mid",description:"Magnificent art deco venue championing independent music."},
-  {id:30,name:"Village Underground",area:"Shoreditch",city:"London",capacity:700,genres:["electronic","indie","alternative","experimental","pop"],website:"villageunderground.co.uk",email:"bookings@villageunderground.co.uk",tier:"mid",description:"Iconic Shoreditch venue built from recycled tube carriages."},
-  {id:31,name:"The Roundhouse",area:"Camden",city:"London",capacity:3300,genres:["rock","indie","pop","electronic","alternative","world"],website:"roundhouse.org.uk",email:"bookings@roundhouse.org.uk",tier:"large",description:"Grade II listed Victorian engine shed, one of London's finest venues."},
-  {id:32,name:"Bush Hall",area:"Shepherd's Bush",city:"London",capacity:350,genres:["indie","folk","pop","singer-songwriter","alternative"],website:"bushhall.co.uk",email:"bookings@bushhall.co.uk",tier:"mid",description:"Ornate Edwardian ballroom turned intimate music venue."},
-  {id:33,name:"Cargo",area:"Shoreditch",city:"London",capacity:600,genres:["electronic","indie","house","techno","alternative"],website:"cargo-london.com",email:"bookings@cargo-london.com",tier:"mid",description:"Iconic Shoreditch venue under the railway arches."},
-  {id:34,name:"Birthdays",area:"Dalston",city:"London",capacity:200,genres:["electronic","indie","alternative","post-punk","experimental"],website:"birthdays-bar.co.uk",email:"bookings@birthdays-bar.co.uk",tier:"grassroots",description:"Dalston's coolest small venue for cutting-edge music."},
-  {id:35,name:"Shapes",area:"Hackney Wick",city:"London",capacity:600,genres:["electronic","techno","house","experimental","dance"],website:"shapeslondon.com",email:"bookings@shapeslondon.com",tier:"mid",description:"Hackney Wick's creative hub for electronic music."},
-  // Specialist
-  {id:36,name:"Pizza Express Jazz Club",area:"Soho",city:"London",capacity:120,genres:["jazz","soul","funk","blues","fusion"],website:"pizzaexpresslive.com",email:"jazz@pizzaexpress.com",tier:"specialist",description:"Beloved basement jazz venue in Soho, one of London's best."},
-  {id:37,name:"Ronnie's Bar",area:"Soho",city:"London",capacity:80,genres:["jazz","acoustic","soul","blues"],website:"ronniescotts.co.uk",email:"bar@ronniescotts.co.uk",tier:"specialist",description:"The bar at Ronnie Scott's, intimate late-night sessions."},
-  {id:38,name:"606 Club",area:"Chelsea",city:"London",capacity:120,genres:["jazz","soul","blues","funk"],website:"606club.co.uk",email:"info@606club.co.uk",tier:"specialist",description:"Chelsea's hidden jazz gem, strictly live music every night."},
-  {id:39,name:"Spice of Life",area:"Soho",city:"London",capacity:100,genres:["jazz","folk","indie","singer-songwriter","acoustic"],website:"spiceoflifesoho.com",email:"music@spiceoflifesoho.com",tier:"specialist",description:"Historic Soho pub with regular live music across many genres."},
-  {id:40,name:"The Boogaloo",area:"Highgate",city:"London",capacity:150,genres:["americana","country","folk","rock","singer-songwriter"],website:"theboogaloo.co.uk",email:"bookings@theboogaloo.co.uk",tier:"specialist",description:"North London's home for Americana and roots music."},
-  // Large
-  {id:41,name:"O2 Academy Brixton",area:"Brixton",city:"London",capacity:4921,genres:["rock","pop","indie","electronic","hip-hop","r&b"],website:"o2academybrixton.co.uk",email:"bookings@o2academybrixton.co.uk",tier:"large",description:"London's most iconic large venue, legendary Brixton atmosphere."},
-  {id:42,name:"O2 Forum Kentish Town",area:"Kentish Town",city:"London",capacity:2300,genres:["indie","rock","pop","electronic","alternative"],website:"o2forumkentishtown.co.uk",email:"bookings@o2forumkentishtown.co.uk",tier:"large",description:"North London's leading large venue for established acts."},
-  {id:43,name:"Alexandra Palace",area:"Wood Green",city:"London",capacity:10000,genres:["pop","rock","electronic","indie","hip-hop"],website:"alexandrapalace.com",email:"events@alexandrapalace.com",tier:"large",description:"Iconic Victorian palace with stunning views over London."},
-  {id:44,name:"Eventim Apollo",area:"Hammersmith",city:"London",capacity:5039,genres:["pop","rock","indie","soul","r&b"],website:"eventimapollo.com",email:"bookings@eventimapollo.com",tier:"large",description:"Art deco masterpiece, one of London's most beautiful venues."},
-  {id:45,name:"Barbican Centre",area:"Barbican",city:"London",capacity:1949,genres:["classical","jazz","world","experimental","electronic"],website:"barbican.org.uk",email:"boxoffice@barbican.org.uk",tier:"large",description:"World-class arts centre in the heart of the City."},
-  // More grassroots
-  {id:46,name:"The Fighting Cocks",area:"Kingston",city:"London",capacity:200,genres:["metal","rock","punk","hardcore","indie"],website:"fightingcocksmusic.co.uk",email:"bookings@fightingcocksmusic.co.uk",tier:"grassroots",description:"Kingston's leading venue for rock and metal."},
-  {id:47,name:"The Amersham Arms",area:"New Cross",city:"London",capacity:150,genres:["indie","punk","alternative","folk","acoustic"],website:"amershamarms.co.uk",email:"gigs@amershamarms.co.uk",tier:"grassroots",description:"New Cross institution for independent and DIY music."},
-  {id:48,name:"Goldsmiths Crackers",area:"New Cross",city:"London",capacity:200,genres:["indie","experimental","electronic","alternative","art rock"],website:"goldsmiths.ac.uk",email:"crackers@gold.ac.uk",tier:"grassroots",description:"On-campus venue with a rich history of supporting emerging acts."},
-  {id:49,name:"The Birds Nest",area:"Deptford",city:"London",capacity:150,genres:["folk","acoustic","singer-songwriter","indie","bluegrass"],website:"birdsnestpub.co.uk",email:"music@birdsnestpub.co.uk",tier:"grassroots",description:"Deptford's favourite spot for acoustic and folk music."},
-  {id:50,name:"The Star of Kings",area:"Kings Cross",city:"London",capacity:180,genres:["indie","alternative","electronic","post-punk","experimental"],website:"starofkings.co.uk",email:"bookings@starofkings.co.uk",tier:"grassroots",description:"Atmospheric Kings Cross venue with a dark, moody vibe."},
-  {id:51,name:"Passing Clouds",area:"Dalston",city:"London",capacity:200,genres:["world","reggae","jazz","soul","folk","experimental"],website:"passingclouds.org",email:"events@passingclouds.org",tier:"grassroots",description:"Dalston's beloved community arts space."},
-  {id:52,name:"The Unicorn",area:"Camden",city:"London",capacity:100,genres:["folk","acoustic","singer-songwriter","blues","roots"],website:"theunicorncamden.co.uk",email:"music@theunicorncamden.co.uk",tier:"grassroots",description:"Intimate Camden venue for acoustic and folk performances."},
-  {id:53,name:"The Jago",area:"Stoke Newington",city:"London",capacity:180,genres:["indie","alternative","electronic","post-punk","dream pop"],website:"thejago.com",email:"bookings@thejago.com",tier:"grassroots",description:"Stoke Newington's coolest underground venue."},
-  {id:54,name:"Tufnell Park Dome",area:"Tufnell Park",city:"London",capacity:400,genres:["indie","rock","alternative","metal","punk"],website:"thetufnellparkdome.com",email:"bookings@thetufnellparkdome.com",tier:"mid",description:"North London's historic dome venue for rock and indie."},
-  {id:55,name:"The Sebright Arms",area:"Bethnal Green",city:"London",capacity:200,genres:["indie","alternative","experimental","art rock","post-punk"],website:"sebrightarms.co.uk",email:"gigs@sebrightarms.co.uk",tier:"grassroots",description:"Beloved East London venue for the adventurous."},
-];
+// ─────────────────────────────────────────────────────────────────────────────
+// SUPABASE
+// ─────────────────────────────────────────────────────────────────────────────
 
-const SAMPLE_OUTREACH = [
-  {id:1,venueId:4,venue:"The Windmill Brixton",area:"Brixton",date:"2024-03-15",status:"replied",subject:"Booking enquiry – your artist name",notes:"They replied! Suggested a Tuesday slot in April."},
-  {id:2,venueId:21,venue:"Jazz Cafe",area:"Camden",date:"2024-03-12",status:"sent",subject:"Booking enquiry – your artist name",notes:""},
-  {id:3,venueId:5,venue:"Servant Jazz Quarters",area:"Dalston",date:"2024-03-10",status:"no_response",subject:"Performance enquiry",notes:"Follow up in 2 weeks"},
-  {id:4,venueId:7,venue:"Moth Club",area:"Hackney",date:"2024-03-08",status:"replied",subject:"Show enquiry – your artist name",notes:"Booked for 28th March!"},
-];
+let sb: any = null;
 
-// ─── HELPERS ──────────────────────────────────────────────────────────────────
-const scoreColor = (s) => s>=85?{bg:"rgba(45,212,160,.15)",c:"#2dd4a0",label:"Excellent"}:s>=70?{bg:"rgba(232,184,75,.15)",c:"#e8b84b",label:"Good"}:s>=55?{bg:"rgba(91,156,246,.15)",c:"#5b9cf6",label:"Fair"}:{bg:"rgba(240,83,101,.15)",c:"#f05365",label:"Low"};
-const fmtDate = (d) => new Date(d).toLocaleDateString("en-GB",{day:"numeric",month:"short",year:"numeric"});
-const tierLabel = (t) => t==="iconic"?"Iconic":t==="large"?"Major":t==="mid"?"Mid-size":t==="specialist"?"Specialist":"Grassroots";
-const tierColor = (t) => t==="iconic"?"b-gold":t==="large"?"b-lavender":t==="mid"?"b-sky":t==="specialist"?"b-emerald":"b-dim";
-
-function StatusBadge({s}) {
-  if(s==="replied") return <span className="badge b-emerald">✓ Replied</span>;
-  if(s==="sent") return <span className="badge b-sky">→ Sent</span>;
-  if(s==="booked") return <span className="badge b-gold">★ Booked</span>;
-  return <span className="badge b-dim">— No response</span>;
+async function initSB() {
+  if (!CFG.supabaseUrl || !CFG.supabaseKey) return null;
+  try {
+    const { createClient } = await import("https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm" as any);
+    sb = createClient(CFG.supabaseUrl, CFG.supabaseKey);
+    return sb;
+  } catch (e) { console.warn("Supabase init failed", e); return null; }
 }
 
-// ─── VENUE MATCHING ───────────────────────────────────────────────────────────
-function matchVenues(profile, allVenues) {
-  const genre = (profile.genre||"").toLowerCase();
-  const area = (profile.area||"").toLowerCase();
-  const similar = (profile.similarArtists||"").toLowerCase();
+// ─────────────────────────────────────────────────────────────────────────────
+// VENUE MATCHING ALGORITHM
+// ─────────────────────────────────────────────────────────────────────────────
 
-  return allVenues.map(v => {
+function matchVenues(profile: Profile, all: Venue[]): Venue[] {
+  const genre   = profile.genre.toLowerCase();
+  const area    = profile.area.toLowerCase();
+  const similar = profile.similarArtists.toLowerCase();
+
+  return all.map(v => {
     let score = 0;
-    const vGenres = v.genres.map(g => g.toLowerCase());
-    const vArea = v.area.toLowerCase();
+    const vg = v.genres.map(g => g.toLowerCase());
+    const va = v.area.toLowerCase();
+    const vb = v.borough.toLowerCase();
 
-    // Area bonus
-    if(area && (vArea.includes(area.split(",")[0].toLowerCase()) || area.includes(vArea))) score += 20;
+    // Location proximity (30 pts max)
+    if (area && (va.includes(area.split(",")[0].trim()) || area.includes(va) || vb.includes(area.split(",")[0].trim()))) score += 30;
     else score += 8;
 
-    // Genre matching
-    const genreWords = genre.split(/[\s,/&]+/).filter(g => g.length > 2);
-    let genreHits = 0;
-    genreWords.forEach(gw => { if(vGenres.some(vg => vg.includes(gw)||gw.includes(vg))) genreHits++; });
-    score += Math.min(50, genreHits * 18);
+    // Genre matching (45 pts max)
+    const gWords = genre.split(/[\s,/&+]+/).filter(g => g.length > 2);
+    gWords.forEach(gw => { if (vg.some(x => x.includes(gw) || gw.includes(x))) score += 15; });
+    score = Math.min(score, 75); // cap genre contribution
 
-    // Similar artists inference
-    const simWords = similar.split(/[\s,]+/).filter(s => s.length > 3);
-    simWords.forEach(sw => { if(vGenres.some(vg => vg.includes(sw.slice(0,5)))) score += 6; });
+    // Similar artists inference (15 pts max)
+    const sWords = similar.split(/[\s,]+/).filter(s => s.length > 3);
+    sWords.forEach(sw => { if (vg.some(x => x.includes(sw.slice(0, 4)))) score += 5; });
 
-    // Tier bonus for emerging artists (prefer smaller venues)
-    if(v.tier==="grassroots") score += 12;
-    else if(v.tier==="mid") score += 8;
-    else if(v.tier==="specialist") score += 10;
-    else if(v.tier==="iconic") score += 6;
-    else score += 3;
+    // Tier weighting — prefer grassroots/specialist for emerging artists
+    if (v.tier === "grassroots") score += 12;
+    else if (v.tier === "specialist") score += 10;
+    else if (v.tier === "mid") score += 7;
+    else if (v.tier === "iconic") score += 5;
+    else score += 2; // large
 
-    score = Math.min(99, Math.max(22, score + Math.floor(Math.random()*6)));
+    // Slight randomness for variety
+    score += Math.floor(Math.random() * 5) - 2;
+    score = Math.max(18, Math.min(99, score));
 
-    const locMatch = vArea.includes(area.split(",")[0].toLowerCase())||area.includes(vArea)?"local":"london-wide";
-    const genreMatch = genreHits>=3?"high":genreHits>=1?"medium":"low";
-    const reason = genreMatch==="high"&&locMatch==="local"
-      ? `Ideal match — strong genre alignment and local to you.`
-      : genreMatch==="high"
-      ? `Excellent genre fit, highly recommended for your sound.`
-      : locMatch==="local"
-      ? `Local venue that books diverse acts — worth approaching.`
-      : `Worth targeting as part of a wider London outreach campaign.`;
+    const locMatch = (va.includes(area.split(",")[0].trim()) || area.includes(va)) ? "local" : "london-wide";
+    const hits = gWords.filter(gw => vg.some(x => x.includes(gw) || gw.includes(x))).length;
+    const genreMatch = hits >= 2 ? "high" : hits === 1 ? "medium" : "low";
 
-    return {...v, score, locMatch, genreMatch, reason};
-  }).sort((a,b) => b.score-a.score);
+    const reason = genreMatch === "high" && locMatch === "local"
+      ? "Excellent match — strong genre alignment and local to your area."
+      : genreMatch === "high"
+      ? "Great genre fit for your sound."
+      : locMatch === "local"
+      ? "Local venue worth targeting as part of your outreach."
+      : "Recommended for a wider London campaign.";
+
+    return { ...v, score, reason, genreMatch, locMatch };
+  }).sort((a, b) => (b.score! - a.score!));
 }
 
-// ─── SUPABASE CLIENT ──────────────────────────────────────────────────────────
-let supabase = null;
+// ─────────────────────────────────────────────────────────────────────────────
+// AI EMAIL GENERATION
+// ─────────────────────────────────────────────────────────────────────────────
 
-async function initSupabase() {
-  if(!SUPABASE_URL || !SUPABASE_KEY) return null;
+async function generateEmail(profile: Profile, venue: Venue): Promise<{subject:string;body:string}|null> {
+  if (!CFG.anthropicKey) return null;
   try {
-    const { createClient } = await import("https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm");
-    supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
-    return supabase;
-  } catch(e) {
-    console.warn("Supabase not available:", e);
-    return null;
-  }
-}
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": CFG.anthropicKey,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 600,
+        system: `You are a UK music industry professional writing booking enquiry emails for artists approaching London venues. Write professional, warm, and concise emails (under 160 words). Be direct and specific. Never use clichés like "I hope this email finds you well". Sound like a real person, not a template. Return ONLY valid JSON with keys "subject" and "body". No markdown, no preamble.`,
+        messages: [{
+          role: "user",
+          content: `Artist: ${profile.artistName}
+Genre: ${profile.genre}
+Area: ${profile.area || "London"}
+Bio: ${profile.bio || "emerging artist"}
+Similar artists: ${profile.similarArtists || "N/A"}
+Spotify: ${profile.spotify || "N/A"}
+Instagram: ${profile.instagram || "N/A"}
+Website: ${profile.website || "N/A"}
 
-// ─── AI EMAIL ─────────────────────────────────────────────────────────────────
-async function generateEmail(profile, venue) {
-  if(!ANTHROPIC_KEY) return null;
-  try {
-    const r = await fetch("https://api.anthropic.com/v1/messages",{
-      method:"POST",
-      headers:{"Content-Type":"application/json","x-api-key":ANTHROPIC_KEY,"anthropic-version":"2023-06-01"},
-      body:JSON.stringify({
-        model:"claude-sonnet-4-20250514",
-        max_tokens:800,
-        system:"You are an expert music industry publicist in the UK. Write warm, professional booking enquiry emails. Be direct, personal, and concise — under 150 words. Never use 'I hope this finds you well'. Return ONLY valid JSON: {\"subject\":\"...\",\"body\":\"...\"}",
-        messages:[{role:"user",content:`Write a booking enquiry email.\nArtist: ${profile.artistName}, Genre: ${profile.genre}, Area: ${profile.area||"London"}, Bio: ${profile.bio||"N/A"}, Similar artists: ${profile.similarArtists||"N/A"}, Spotify: ${profile.spotify||"N/A"}, Instagram: ${profile.instagram||"N/A"}\nVenue: ${venue.name} (${venue.area}), Genres: ${venue.genres.join(", ")}, Description: ${venue.description}\nReturn ONLY: {"subject":"...","body":"..."}`}]
+Venue: ${venue.name}
+Area: ${venue.area}, ${venue.borough}
+Genres they book: ${venue.genres.join(", ")}
+Description: ${venue.description}
+
+Write a genuine, personalised booking enquiry email. The body should be signed off with the artist's name and include their links naturally. Return JSON only: {"subject":"...","body":"..."}`
+        }]
       })
     });
-    const d = await r.json();
-    const text = d.content?.[0]?.text||"";
-    return JSON.parse(text.replace(/```json|```/g,"").trim());
-  } catch(e) {
+    const d = await res.json();
+    const text = d.content?.[0]?.text || "";
+    return JSON.parse(text.replace(/```json|```/g, "").trim());
+  } catch (e) {
     return null;
   }
 }
 
-// ─── STRIPE ───────────────────────────────────────────────────────────────────
-async function openStripeCheckout(plan, userEmail) {
-  if(!STRIPE_KEY) return false;
+// ─────────────────────────────────────────────────────────────────────────────
+// STRIPE
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function goStripe(plan: "artist"|"pro", email: string): Promise<boolean> {
+  if (!CFG.stripeKey) return false;
   try {
-    const { loadStripe } = await import("https://js.stripe.com/v3/");
-    const stripe = await loadStripe(STRIPE_KEY);
+    const { loadStripe } = await import("https://js.stripe.com/v3/" as any);
+    const stripe = await loadStripe(CFG.stripeKey);
+    const priceId = plan === "artist" ? CFG.artistPriceId : CFG.proPriceId;
     await stripe.redirectToCheckout({
-      lineItems:[{price: STRIPE_PRICE_IDS[plan], quantity:1}],
-      mode:"subscription",
-      successUrl: window.location.origin + "?payment=success",
+      lineItems: [{ price: priceId, quantity: 1 }],
+      mode: "subscription",
+      successUrl: window.location.origin + "?payment=success&plan=" + plan,
       cancelUrl: window.location.origin + "?payment=cancelled",
-      customerEmail: userEmail,
+      customerEmail: email,
     });
     return true;
-  } catch(e) {
-    console.warn("Stripe error:", e);
-    return false;
-  }
+  } catch (e) { console.warn("Stripe error:", e); return false; }
 }
 
-// ─── RESEND EMAIL ─────────────────────────────────────────────────────────────
-// Note: Resend requires a backend/edge function — this calls your Vercel API route
-async function sendViaResend(to, subject, body, fromName) {
+// ─────────────────────────────────────────────────────────────────────────────
+// SEND EMAIL via /api/send-email (Resend)
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function sendEmail(to: string, subject: string, body: string, fromName: string): Promise<boolean> {
   try {
-    const r = await fetch("/api/send-email",{
-      method:"POST",
-      headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({to, subject, body, fromName})
+    const r = await fetch("/api/send-email", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ to, subject, body, fromName }),
     });
     return r.ok;
-  } catch(e) {
-    return false;
-  }
+  } catch { return false; }
 }
 
-// ─── TOAST ────────────────────────────────────────────────────────────────────
-function Toast({msg, type="ok", onClose}) {
-  useEffect(()=>{const t=setTimeout(onClose,4000);return()=>clearTimeout(t)},[onClose]);
-  const icon = type==="ok"?"✓":type==="err"?"✕":"ℹ";
-  const col = type==="ok"?"var(--emerald)":type==="err"?"var(--crimson)":"var(--gold)";
+// ─────────────────────────────────────────────────────────────────────────────
+// HELPERS
+// ─────────────────────────────────────────────────────────────────────────────
+
+const scoreStyle = (s: number) =>
+  s >= 85 ? { bg: "rgba(45,212,191,.15)", c: "#2dd4bf", lbl: "Excellent" }
+: s >= 70 ? { bg: "rgba(245,166,35,.15)", c: "#f5a623", lbl: "Good" }
+: s >= 55 ? { bg: "rgba(96,165,250,.15)", c: "#60a5fa", lbl: "Fair" }
+           : { bg: "rgba(239,68,68,.15)",  c: "#ef4444", lbl: "Low" };
+
+const tierBadge = (t: string) =>
+  t === "iconic"     ? { cls: "b-orange", lbl: "Iconic" }
+: t === "large"      ? { cls: "b-blue",  lbl: "Major" }
+: t === "mid"        ? { cls: "b-blue",  lbl: "Mid-size" }
+: t === "specialist" ? { cls: "b-green",  lbl: "Specialist" }
+                     : { cls: "b-muted", lbl: "Grassroots" };
+
+const fmtDate = (d: string) => new Date(d).toLocaleDateString("en-GB", { day:"numeric", month:"short", year:"numeric" });
+
+const thisMonth = () => new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split("T")[0];
+
+// ─────────────────────────────────────────────────────────────────────────────
+// COMPONENTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+function Toast({ msg, type, onClose }: { msg:string; type:ToastType; onClose:()=>void }) {
+  useEffect(() => { const t = setTimeout(onClose, 4200); return () => clearTimeout(t); }, [onClose]);
+  const col = type === "ok" ? "var(--green)" : type === "err" ? "var(--red)" : "var(--orangeHi)";
+  const icon = type === "ok" ? "✓" : type === "err" ? "✕" : "ℹ";
   return (
-    <div className={`toast toast-${type}`}>
-      <span style={{color:col,fontWeight:700,fontSize:15}}>{icon}</span>
+    <div className="toast" style={{ borderColor: col }}>
+      <span style={{ color: col, fontWeight: 700, fontSize: 15 }}>{icon}</span>
       <span>{msg}</span>
     </div>
   );
 }
 
-// ─── LANDING ──────────────────────────────────────────────────────────────────
-function Landing({onSignup, onLogin}) {
-  const [typed, setTyped] = useState("");
-  const [cursorOn, setCursorOn] = useState(true);
+function StatusBadge({ s }: { s: string }) {
+  if (s === "replied")     return <span className="badge b-green">✓ Replied</span>;
+  if (s === "booked")      return <span className="badge b-orange">★ Booked</span>;
+  if (s === "sent")        return <span className="badge b-blue">→ Awaiting</span>;
+  return <span className="badge b-muted">— No reply</span>;
+}
 
-  useEffect(()=>{
-    const phrases = ["book London venues.","get more gigs.","write booking emails.","grow your fanbase.","focus on the music."];
-    let ci=0,li=0,del=false;
-    const tick=()=>{
-      const p=phrases[ci];
-      if(!del){setTyped(p.slice(0,li+1));li++;if(li===p.length){del=true;setTimeout(tick,2000);return;}}
-      else{setTyped(p.slice(0,li-1));li--;if(li===0){del=false;ci=(ci+1)%phrases.length;}}
-      setTimeout(tick,del?42:80);
+// ─── LANDING ──────────────────────────────────────────────────────────────────
+function Landing({ onOpen }: { onOpen:(m:string)=>void }) {
+  const [typed, setTyped] = useState("");
+  const [blink, setBlink] = useState(true);
+
+  useEffect(() => {
+    const phrases = ["book London venues.", "get more gigs.", "write booking emails.", "grow your fanbase.", "focus on your music."];
+    let ci=0, li=0, del=false;
+    const tick = () => {
+      const p = phrases[ci];
+      if (!del) { setTyped(p.slice(0, li+1)); li++; if (li === p.length) { del=true; setTimeout(tick,1800); return; } }
+      else       { setTyped(p.slice(0, li-1)); li--; if (li === 0) { del=false; ci=(ci+1)%phrases.length; } }
+      setTimeout(tick, del ? 38 : 72);
     };
-    const t=setTimeout(tick,800);
-    const c=setInterval(()=>setCursorOn(x=>!x),530);
-    return()=>{clearTimeout(t);clearInterval(c);};
-  },[]);
+    setTimeout(tick, 900);
+    const c = setInterval(() => setBlink(x => !x), 520);
+    return () => clearInterval(c);
+  }, []);
 
   return (
-    <div style={{minHeight:"100vh",background:"var(--bg)",position:"relative",overflowX:"hidden"}}>
-      <div className="l-grid"/>
-      <div className="l-glow1"/>
-      <div className="l-glow2"/>
-      <div className="l-glow3"/>
+    <div style={{ minHeight:"100vh", background:"var(--bg)", position:"relative", overflow:"hidden" }}>
+      <div className="l-grid" />
+      <div className="l-glow" />
 
       {/* NAV */}
-      <nav style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"22px 48px",position:"relative",zIndex:10,borderBottom:"1px solid rgba(255,255,255,.04)"}}>
-        <div style={{fontFamily:"var(--font-d)",fontSize:19,fontWeight:800,letterSpacing:"-.02em"}}>
-          Gig<em style={{color:"var(--gold)",fontStyle:"normal"}}>Pilot</em> <span style={{color:"var(--text3)",fontSize:13,fontWeight:400}}>AI</span>
+      <nav style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"20px 44px", position:"relative", zIndex:10, borderBottom:"1px solid rgba(255,255,255,.04)" }}>
+        <div style={{ fontFamily:"var(--fd)", fontSize:18, fontWeight:700 }}>
+          Gig<em style={{ color:"var(--orangeHi)", fontStyle:"normal" }}>Pilot</em>
+          <span style={{ color:"var(--text3)", fontSize:11, fontWeight:400, marginLeft:6 }}>AI</span>
         </div>
-        <div style={{display:"flex",gap:10,alignItems:"center"}}>
-          <button className="btn btn-ghost" onClick={onLogin}>Sign in</button>
-          <button className="btn btn-gold" onClick={onSignup}>Get started free</button>
+        <div style={{ display:"flex", gap:10 }}>
+          <button className="btn btn-ghost" onClick={() => onOpen("login")}>Sign in</button>
+          <button className="btn btn-primary" onClick={() => onOpen("signup")}>Get started free</button>
         </div>
       </nav>
 
       {/* HERO */}
-      <div style={{minHeight:"90vh",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",textAlign:"center",padding:"60px 24px 40px",position:"relative",zIndex:10}}>
-        <div className="badge b-gold" style={{marginBottom:24,fontSize:11,padding:"5px 14px"}}>
-          🎵 Built for London musicians
-        </div>
-        <h1 style={{fontSize:"clamp(38px,6vw,76px)",fontWeight:800,letterSpacing:"-.04em",maxWidth:820,marginBottom:22,lineHeight:1.05}}>
+      <div style={{ minHeight:"88vh", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", textAlign:"center", padding:"60px 24px 40px", position:"relative", zIndex:10 }}>
+        <div className="badge b-orange" style={{ marginBottom:22, fontSize:11, padding:"5px 13px" }}>🎵 Built for London musicians</div>
+        <h1 style={{ fontSize:"clamp(36px,5.5vw,70px)", fontWeight:700, maxWidth:780, marginBottom:20, lineHeight:1.06 }}>
           AI that helps you<br/>
-          <span style={{color:"var(--gold)"}}>{typed}</span>
-          <span style={{color:"var(--gold)",opacity:cursorOn?1:0}}>|</span>
+          <span style={{ color:"var(--orangeHi)" }}>{typed}</span>
+          <span style={{ color:"var(--orangeHi)", opacity:blink?1:0 }}>|</span>
         </h1>
-        <p style={{color:"var(--text2)",fontSize:"clamp(15px,2vw,19px)",maxWidth:520,marginBottom:44,lineHeight:1.75,fontWeight:300}}>
-          GigPilot matches you with the right London venues, writes personalised booking emails, and tracks every conversation — so you can focus on making music.
+        <p style={{ color:"var(--text2)", fontSize:"clamp(14px,1.8vw,17px)", maxWidth:500, marginBottom:40, lineHeight:1.8, fontWeight:400 }}>
+          GigPilot matches you with the right London venues, writes personalised booking emails and tracks every conversation — so you can focus on making music.
         </p>
-        <div style={{display:"flex",gap:14,flexWrap:"wrap",justifyContent:"center",marginBottom:16}}>
-          <button className="btn btn-gold btn-xl" onClick={onSignup}>Start for free →</button>
-          <button className="btn btn-outline btn-lg" onClick={onLogin}>Sign in</button>
+        <div style={{ display:"flex", gap:12, flexWrap:"wrap", justifyContent:"center", marginBottom:14 }}>
+          <button className="btn btn-primary btn-xl" onClick={() => onOpen("signup")}>Start for free →</button>
+          <button className="btn btn-outline btn-lg" onClick={() => onOpen("login")}>Sign in</button>
         </div>
-        <p style={{color:"var(--text3)",fontSize:12,marginTop:4}}>No card required · Free plan forever · 55+ London venues</p>
+        <p style={{ color:"var(--text3)", fontSize:11 }}>No card required · Free forever · 65 London venues</p>
 
-        <div style={{display:"flex",gap:10,flexWrap:"wrap",justifyContent:"center",marginTop:52}}>
-          {["🎯 AI venue matching","✉️ Personalised emails","📊 Outreach tracking","🇬🇧 55+ London venues","💷 Plans from £0"].map(f=>(
-            <div key={f} style={{background:"rgba(255,255,255,.03)",border:"1px solid var(--border)",borderRadius:99,padding:"7px 16px",fontSize:12,color:"var(--text2)"}}>{f}</div>
+        <div style={{ display:"flex", gap:8, flexWrap:"wrap", justifyContent:"center", marginTop:44 }}>
+          {["🎯 AI venue matching","✉️ Personalised emails","📊 Outreach tracking","🇬🇧 65+ London venues","💷 From £0/month"].map(f => (
+            <div key={f} style={{ background:"rgba(255,255,255,.03)", border:"1px solid var(--border)", borderRadius:99, padding:"6px 14px", fontSize:11, color:"var(--text2)" }}>{f}</div>
           ))}
         </div>
       </div>
 
-      {/* HOW IT WORKS */}
-      <section style={{padding:"80px 48px",borderTop:"1px solid var(--border)",position:"relative",zIndex:10}}>
-        <h2 style={{textAlign:"center",fontSize:"clamp(26px,4vw,40px)",fontWeight:800,marginBottom:10,letterSpacing:"-.02em"}}>From profile to booked</h2>
-        <p style={{textAlign:"center",color:"var(--text2)",marginBottom:52,fontSize:15,fontWeight:300}}>Three steps. Minutes, not hours.</p>
-        <div className="g3" style={{maxWidth:960,margin:"0 auto",gap:22}}>
+      {/* STEPS */}
+      <section style={{ padding:"70px 44px", borderTop:"1px solid var(--border)", position:"relative", zIndex:10 }}>
+        <h2 style={{ textAlign:"center", fontSize:"clamp(24px,3.5vw,38px)", fontWeight:700, marginBottom:8 }}>From profile to booked</h2>
+        <p style={{ textAlign:"center", color:"var(--text2)", marginBottom:46, fontSize:14 }}>Three steps. Minutes, not weeks.</p>
+        <div className="g3" style={{ maxWidth:900, margin:"0 auto" }}>
           {[
-            {n:"01",icon:"🎸",t:"Build your profile",d:"Your genre, influences, links, and bio. Takes 2 minutes. GigPilot uses this to personalise everything."},
-            {n:"02",icon:"🎯",t:"Discover matched venues",d:"AI scores 55+ London venues against your sound. See which ones are the right fit and why."},
-            {n:"03",icon:"✉️",t:"Send AI-written emails",d:"One click writes a personalised booking email. Edit it, then send directly from GigPilot."},
-          ].map(s=>(
-            <div key={s.n} className="card" style={{position:"relative",overflow:"hidden",borderColor:"var(--border2)"}}>
-              <div style={{fontSize:10,fontFamily:"var(--font-d)",fontWeight:700,color:"var(--gold)",letterSpacing:".14em",marginBottom:16,opacity:.7}}>{s.n}</div>
-              <div style={{fontSize:30,marginBottom:14,filter:"grayscale(20%)"}}>{s.icon}</div>
-              <h3 style={{fontSize:17,fontWeight:700,marginBottom:8}}>{s.t}</h3>
-              <p style={{color:"var(--text2)",fontSize:13,lineHeight:1.65,fontWeight:300}}>{s.d}</p>
-              <div style={{position:"absolute",bottom:-16,right:-16,fontSize:72,opacity:.03,lineHeight:1,fontFamily:"var(--font-d)"}}>{s.n}</div>
+            { n:"01", icon:"🎸", t:"Build your profile", d:"Your genre, influences, links, and bio. GigPilot uses this to personalise every email and match." },
+            { n:"02", icon:"🎯", t:"Discover matched venues", d:"AI scores 65+ real London venues against your sound and location. See which ones are the right fit." },
+            { n:"03", icon:"✉️", t:"Send AI-written emails", d:"One click writes a personalised booking email. Edit it, then send directly from GigPilot." },
+          ].map(s => (
+            <div key={s.n} className="card" style={{ position:"relative", overflow:"hidden" }}>
+              <div style={{ fontSize:9, fontFamily:"var(--fd)", color:"var(--orangeHi)", letterSpacing:".12em", marginBottom:14, opacity:.6 }}>{s.n}</div>
+              <div style={{ fontSize:28, marginBottom:12 }}>{s.icon}</div>
+              <h3 style={{ fontSize:16, fontWeight:700, marginBottom:6 }}>{s.t}</h3>
+              <p style={{ color:"var(--text2)", fontSize:13, lineHeight:1.65 }}>{s.d}</p>
+              <div style={{ position:"absolute", bottom:-10, right:-10, fontSize:64, opacity:.025, lineHeight:1, fontFamily:"var(--fd)" }}>{s.n}</div>
             </div>
           ))}
         </div>
       </section>
 
       {/* PRICING */}
-      <section style={{padding:"80px 48px",borderTop:"1px solid var(--border)",position:"relative",zIndex:10}}>
-        <h2 style={{textAlign:"center",fontSize:"clamp(26px,4vw,40px)",fontWeight:800,marginBottom:10,letterSpacing:"-.02em"}}>Simple pricing</h2>
-        <p style={{textAlign:"center",color:"var(--text2)",marginBottom:52,fontSize:15,fontWeight:300}}>Start free. Upgrade when you're ready.</p>
-        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(240px,1fr))",gap:20,maxWidth:860,margin:"0 auto"}}>
+      <section style={{ padding:"70px 44px", borderTop:"1px solid var(--border)", position:"relative", zIndex:10 }}>
+        <h2 style={{ textAlign:"center", fontSize:"clamp(24px,3.5vw,38px)", fontWeight:700, marginBottom:8 }}>Straightforward pricing</h2>
+        <p style={{ textAlign:"center", color:"var(--text2)", marginBottom:46, fontSize:14 }}>Start free. Upgrade when you're ready.</p>
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(230px,1fr))", gap:18, maxWidth:820, margin:"0 auto" }}>
           {[
-            {name:"Free",price:"£0",sub:"forever",perks:["5 venue matches / month","3 booking emails / month","Artist profile","Basic dashboard"],cta:"Get started free",pri:false},
-            {name:"Artist",price:"£15",sub:"/month",perks:["Unlimited venue matches","50 booking emails / month","Full outreach tracking","AI email generation","Email delivery via Resend"],cta:"Start Artist plan",pri:true},
-            {name:"Pro",price:"£39",sub:"/month",perks:["Everything in Artist","Unlimited emails","Advanced analytics","Priority venue data","Early access features"],cta:"Go Pro",pri:false},
-          ].map(p=>(
-            <div key={p.name} className="card" style={{border:p.pri?"1px solid var(--gold)":"",position:"relative",padding:"28px 24px"}}>
-              {p.pri&&<div className="badge b-gold" style={{position:"absolute",top:-13,left:"50%",transform:"translateX(-50%)",whiteSpace:"nowrap",fontSize:10}}>Most popular</div>}
-              <div style={{fontFamily:"var(--font-d)",fontWeight:800,fontSize:18,marginBottom:6}}>{p.name}</div>
-              <div style={{display:"flex",alignItems:"baseline",gap:3,marginBottom:6}}>
-                <span style={{fontFamily:"var(--font-d)",fontSize:36,fontWeight:800,color:p.pri?"var(--gold)":"var(--text)"}}>{p.price}</span>
-                <span style={{color:"var(--text3)",fontSize:13}}>{p.sub}</span>
+            { name:"Free", price:"£0", sub:"/month", perks:["5 venue matches/month","3 booking emails/month","Artist profile","Basic dashboard"], cta:"Get started free", hot:false },
+            { name:"Artist", price:"£15", sub:"/month", perks:["Unlimited venue matches","50 AI emails/month","Full outreach tracking","Real email delivery"], cta:"Start Artist plan", hot:true },
+            { name:"Pro", price:"£39", sub:"/month", perks:["Everything in Artist","Unlimited emails","Priority support","Early access features"], cta:"Go Pro", hot:false },
+          ].map(p => (
+            <div key={p.name} className="card" style={{ border:p.hot?"1px solid var(--orangeHi)":"", position:"relative", padding:"26px 22px" }}>
+              {p.hot && <div className="badge b-orange" style={{ position:"absolute", top:-12, left:"50%", transform:"translateX(-50%)", whiteSpace:"nowrap" }}>Most popular</div>}
+              <div style={{ fontFamily:"var(--fd)", fontWeight:700, fontSize:17, marginBottom:5 }}>{p.name}</div>
+              <div style={{ display:"flex", alignItems:"baseline", gap:2, marginBottom:5 }}>
+                <span style={{ fontFamily:"var(--fd)", fontSize:32, fontWeight:700, color:p.hot?"var(--orangeHi)":"var(--text)" }}>{p.price}</span>
+                <span style={{ color:"var(--text3)", fontSize:12 }}>{p.sub}</span>
               </div>
-              <hr className="div" style={{borderColor:"var(--border2)"}}/>
-              <ul style={{listStyle:"none",marginBottom:24,display:"flex",flexDirection:"column",gap:9}}>
-                {p.perks.map(k=><li key={k} style={{display:"flex",gap:8,color:"var(--text2)",fontSize:13,fontWeight:300}}><span style={{color:"var(--emerald)",flexShrink:0,marginTop:1}}>✓</span>{k}</li>)}
+              <hr className="div" style={{ borderColor:"var(--border2)" }} />
+              <ul style={{ listStyle:"none", marginBottom:22, display:"flex", flexDirection:"column", gap:8 }}>
+                {p.perks.map(k => (
+                  <li key={k} style={{ display:"flex", gap:8, color:"var(--text2)", fontSize:13 }}>
+                    <span style={{ color:"var(--green)", flexShrink:0 }}>✓</span>{k}
+                  </li>
+                ))}
               </ul>
-              <button className={`btn btn-block ${p.pri?"btn-gold":"btn-outline"}`} onClick={onSignup}>{p.cta}</button>
+              <button className={`btn btn-block ${p.hot?"btn-primary":"btn-outline"}`} onClick={() => onOpen("signup")}>{p.cta}</button>
             </div>
           ))}
         </div>
       </section>
 
-      {/* FOOTER */}
-      <footer style={{borderTop:"1px solid var(--border)",padding:"28px 48px",display:"flex",justifyContent:"space-between",alignItems:"center",color:"var(--text3)",fontSize:12,position:"relative",zIndex:10,flexWrap:"wrap",gap:12}}>
-        <div style={{fontFamily:"var(--font-d)",fontWeight:800,fontSize:15}}>Gig<em style={{color:"var(--gold)",fontStyle:"normal"}}>Pilot</em> AI</div>
-        <div>© 2024 GigPilot AI · Built for independent London musicians</div>
+      <footer style={{ borderTop:"1px solid var(--border)", padding:"24px 44px", display:"flex", justifyContent:"space-between", alignItems:"center", color:"var(--text3)", fontSize:11, flexWrap:"wrap", gap:10 }}>
+        <div style={{ fontFamily:"var(--fd)", fontWeight:700, fontSize:14 }}>Gig<em style={{ color:"var(--orangeHi)", fontStyle:"normal" }}>Pilot</em> AI</div>
+        <div>© {new Date().getFullYear()} GigPilot AI · Built for independent London musicians</div>
       </footer>
     </div>
   );
 }
 
-// ─── AUTH ─────────────────────────────────────────────────────────────────────
-function Auth({initMode, onClose, onAuth, showToast}) {
-  const [mode, setMode] = useState(initMode||"signup");
+// ─── AUTH MODAL ───────────────────────────────────────────────────────────────
+function AuthModal({ mode, onClose, onAuth, toast }: { mode:string; onClose:()=>void; onAuth:(u:User)=>void; toast:(m:string,t?:ToastType)=>void }) {
+  const [m, setM] = useState(mode);
   const [email, setEmail] = useState("");
   const [pass, setPass] = useState("");
   const [name, setName] = useState("");
@@ -579,73 +899,85 @@ function Auth({initMode, onClose, onAuth, showToast}) {
   const [err, setErr] = useState("");
 
   const handleGoogle = async () => {
-    if(!supabase) { onAuth({email:"demo@gigpilot.co.uk",name:"Demo User",provider:"google",id:"demo"}); return; }
-    const {error} = await supabase.auth.signInWithOAuth({provider:"google",options:{redirectTo:window.location.origin}});
-    if(error) setErr(error.message);
+    if (!sb) {
+      // Demo mode — simulate Google auth
+      onAuth({ id:"demo", email:"demo@gigpilot.co.uk", name:"Demo Musician", provider:"google" });
+      return;
+    }
+    const { error } = await sb.auth.signInWithOAuth({
+      provider: "google",
+      options: { redirectTo: window.location.origin }
+    });
+    if (error) setErr(error.message);
   };
 
   const submit = async () => {
-    if(!email||!pass) {setErr("Please fill in all fields");return;}
-    if(pass.length<6) {setErr("Password must be at least 6 characters");return;}
-    setLoading(true);setErr("");
-    if(!supabase) {
+    if (!email || !pass) { setErr("Please fill in all fields."); return; }
+    if (pass.length < 6) { setErr("Password must be at least 6 characters."); return; }
+    if (m === "signup" && !name) { setErr("Please enter your name."); return; }
+    setLoading(true); setErr("");
+
+    if (!sb) {
       // Demo mode
-      onAuth({email,name:name||email.split("@")[0],provider:"email",id:"demo"});
+      onAuth({ id:"demo", email, name:name||email.split("@")[0], provider:"email" });
       return;
     }
+
     try {
-      if(mode==="signup") {
-        const {data,error} = await supabase.auth.signUp({email,password:pass,options:{data:{full_name:name}}});
-        if(error) throw error;
-        if(data.user) onAuth({email,name:name||email.split("@")[0],provider:"email",id:data.user.id});
-        else showToast("Check your email to confirm your account!","info");
+      if (m === "signup") {
+        const { data, error } = await sb.auth.signUp({ email, password:pass, options:{data:{full_name:name}} });
+        if (error) throw error;
+        if (data.user?.confirmed_at || data.user?.email_confirmed_at) {
+          onAuth({ id:data.user.id, email, name, provider:"email" });
+        } else {
+          toast("Check your inbox to confirm your email!", "info");
+          onClose();
+        }
       } else {
-        const {data,error} = await supabase.auth.signInWithPassword({email,password:pass});
-        if(error) throw error;
-        onAuth({email,name:data.user?.user_metadata?.full_name||email.split("@")[0],provider:"email",id:data.user.id});
+        const { data, error } = await sb.auth.signInWithPassword({ email, password:pass });
+        if (error) throw error;
+        onAuth({ id:data.user.id, email:data.user.email!, name:data.user.user_metadata?.full_name||email.split("@")[0], provider:"email" });
       }
-    } catch(e) {
-      setErr(e.message||"Something went wrong");
+    } catch (e: any) {
+      setErr(e.message || "Something went wrong.");
     }
     setLoading(false);
   };
 
   return (
-    <div className="overlay" onClick={e=>e.target===e.currentTarget&&onClose()}>
+    <div className="overlay" onClick={e => e.target === e.currentTarget && onClose()}>
       <div className="modal">
         <button className="modal-x" onClick={onClose}>×</button>
-        {DEMO_MODE&&<div className="demo-banner">🎭 Demo mode — Supabase not configured. Auth is simulated.</div>}
-        <div style={{fontFamily:"var(--font-d)",fontSize:22,fontWeight:800,marginBottom:4,letterSpacing:"-.02em"}}>
-          {mode==="signup"?"Create your account":"Welcome back"}
-        </div>
-        <p style={{color:"var(--text2)",fontSize:13,marginBottom:28,fontWeight:300}}>
-          {mode==="signup"?"Start booking London venues with AI":"Sign in to your GigPilot dashboard"}
-        </p>
+        {DEMO && <div className="demo-pill" style={{ marginBottom:18 }}>🎭 Demo mode — Supabase not configured, auth is simulated.</div>}
+        <h2 style={{ fontSize:20, fontWeight:700, marginBottom:4 }}>{m==="signup" ? "Create your account" : "Welcome back"}</h2>
+        <p style={{ color:"var(--text2)", fontSize:13, marginBottom:26 }}>{m==="signup" ? "Start booking London venues with AI." : "Sign back in to GigPilot."}</p>
 
-        <button className="social-btn" style={{marginBottom:16}} onClick={handleGoogle}>
-          <svg width="18" height="18" viewBox="0 0 18 18"><path fill="#4285F4" d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844a4.14 4.14 0 0 1-1.796 2.716v2.259h2.908c1.702-1.567 2.684-3.875 2.684-6.615z"/><path fill="#34A853" d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 0 0 9 18z"/><path fill="#FBBC05" d="M3.964 10.71A5.41 5.41 0 0 1 3.682 9c0-.593.102-1.17.282-1.71V4.958H.957A8.996 8.996 0 0 0 0 9c0 1.452.348 2.827.957 4.042l3.007-2.332z"/><path fill="#EA4335" d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 0 0 .957 4.958L3.964 6.29C4.672 4.163 6.656 3.58 9 3.58z"/></svg>
+        <button className="social-btn" style={{ marginBottom:15 }} onClick={handleGoogle}>
+          <svg width="17" height="17" viewBox="0 0 18 18"><path fill="#4285F4" d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844a4.14 4.14 0 0 1-1.796 2.716v2.259h2.908c1.702-1.567 2.684-3.875 2.684-6.615z"/><path fill="#34A853" d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 0 0 9 18z"/><path fill="#FBBC05" d="M3.964 10.71A5.41 5.41 0 0 1 3.682 9c0-.593.102-1.17.282-1.71V4.958H.957A8.996 8.996 0 0 0 0 9c0 1.452.348 2.827.957 4.042l3.007-2.332z"/><path fill="#EA4335" d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 0 0 .957 4.958L3.964 6.29C4.672 4.163 6.656 3.58 9 3.58z"/></svg>
           Continue with Google
         </button>
 
-        <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:18}}>
-          <hr className="div" style={{flex:1,margin:0}}/><span style={{color:"var(--text3)",fontSize:11,whiteSpace:"nowrap"}}>or with email</span><hr className="div" style={{flex:1,margin:0}}/>
+        <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:16 }}>
+          <hr className="div" style={{ flex:1, margin:0 }} />
+          <span style={{ color:"var(--text3)", fontSize:11 }}>or</span>
+          <hr className="div" style={{ flex:1, margin:0 }} />
         </div>
 
-        <div style={{display:"flex",flexDirection:"column",gap:14}}>
-          {mode==="signup"&&<div className="field"><label className="label">Full name</label><input className="inp" placeholder="Your name" value={name} onChange={e=>{setName(e.target.value);setErr("")}}/></div>}
-          <div className="field"><label className="label">Email</label><input className="inp" type="email" placeholder="you@example.com" value={email} onChange={e=>{setEmail(e.target.value);setErr("")}}/></div>
-          <div className="field"><label className="label">Password</label><input className="inp" type="password" placeholder="••••••••" value={pass} onChange={e=>{setPass(e.target.value);setErr("")}} onKeyDown={e=>e.key==="Enter"&&submit()}/></div>
-          {err&&<div style={{background:"var(--crimsonDim)",border:"1px solid rgba(240,83,101,.25)",borderRadius:8,padding:"10px 14px",color:"var(--crimson)",fontSize:13}}>{err}</div>}
-          <button className="btn btn-gold btn-block" style={{padding:13,fontSize:14}} onClick={submit} disabled={loading}>
-            {loading?"Please wait…":mode==="signup"?"Create free account →":"Sign in →"}
+        <div style={{ display:"flex", flexDirection:"column", gap:13 }}>
+          {m === "signup" && <div className="field"><label className="label">Full name</label><input className="inp" placeholder="Your name" value={name} onChange={e=>{setName(e.target.value);setErr("")}} /></div>}
+          <div className="field"><label className="label">Email</label><input className="inp" type="email" placeholder="you@example.com" value={email} onChange={e=>{setEmail(e.target.value);setErr("")}} /></div>
+          <div className="field"><label className="label">Password</label><input className="inp" type="password" placeholder="••••••••" value={pass} onChange={e=>{setPass(e.target.value);setErr("")}} onKeyDown={e=>e.key==="Enter"&&submit()} /></div>
+          {err && <div style={{ background:"var(--redDim)", border:"1px solid rgba(239,68,68,.2)", borderRadius:7, padding:"10px 13px", color:"var(--red)", fontSize:13 }}>{err}</div>}
+          <button className="btn btn-primary btn-block" style={{ padding:12 }} onClick={submit} disabled={loading}>
+            {loading ? "Please wait…" : m==="signup" ? "Create free account →" : "Sign in →"}
           </button>
         </div>
 
-        <hr className="div"/>
-        <p style={{textAlign:"center",color:"var(--text2)",fontSize:13}}>
-          {mode==="signup"?"Already have an account? ":"Don't have an account? "}
-          <span style={{color:"var(--gold)",cursor:"pointer",fontWeight:600}} onClick={()=>{setMode(mode==="signup"?"login":"signup");setErr("")}}>
-            {mode==="signup"?"Sign in":"Sign up free"}
+        <hr className="div" />
+        <p style={{ textAlign:"center", color:"var(--text2)", fontSize:13 }}>
+          {m==="signup" ? "Already have an account? " : "No account yet? "}
+          <span style={{ color:"var(--orangeHi)", cursor:"pointer", fontWeight:600 }} onClick={() => { setM(m==="signup"?"login":"signup"); setErr(""); }}>
+            {m==="signup" ? "Sign in" : "Sign up free"}
           </span>
         </p>
       </div>
@@ -654,77 +986,77 @@ function Auth({initMode, onClose, onAuth, showToast}) {
 }
 
 // ─── ONBOARDING ───────────────────────────────────────────────────────────────
-function Onboarding({user, onComplete}) {
+function Onboarding({ user, onDone }: { user:User; onDone:(p:Profile)=>void }) {
   const [step, setStep] = useState(0);
   const [saving, setSaving] = useState(false);
-  const [p, setP] = useState({
-    artistName:user.name||"",area:"",genre:"",
-    spotify:"",soundcloud:"",instagram:"",
-    bio:"",similarArtists:""
-  });
-  const up = (k,v) => setP(x=>({...x,[k]:v}));
+  const [p, setP] = useState<Profile>({ artistName:user.name||"", area:"", genre:"", similarArtists:"", bio:"", spotify:"", soundcloud:"", instagram:"", website:"" });
+  const up = (k: keyof Profile, v: string) => setP(x => ({ ...x, [k]:v }));
 
   const steps = [
     {
-      title:"What's your artist name?",
-      sub:"This is how you'll appear to venues.",
-      body:(
-        <div style={{display:"flex",flexDirection:"column",gap:16}}>
-          <div className="field"><label className="label">Artist / Band name *</label><input className="inp" placeholder="e.g. Maya Jones" value={p.artistName} onChange={e=>up("artistName",e.target.value)}/></div>
-          <div className="field"><label className="label">Your area in London *</label><input className="inp" placeholder="e.g. Hackney, Brixton, Camden…" value={p.area} onChange={e=>up("area",e.target.value)}/></div>
+      title: "What's your artist name?",
+      sub: "How you'll appear to venues.",
+      ok: () => !!(p.artistName && p.area),
+      body: (
+        <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+          <div className="field"><label className="label">Artist / Band name *</label><input className="inp" placeholder="e.g. Maya Jones" value={p.artistName} onChange={e=>up("artistName",e.target.value)} /></div>
+          <div className="field"><label className="label">Your area in London *</label><input className="inp" placeholder="e.g. Hackney, Brixton, Dalston…" value={p.area} onChange={e=>up("area",e.target.value)} /></div>
         </div>
-      ),
-      ok:()=>!!(p.artistName&&p.area)
+      )
     },
     {
-      title:"What's your genre?",
-      sub:"The AI uses this to score venue matches.",
-      body:(
-        <div style={{display:"flex",flexDirection:"column",gap:16}}>
-          <div className="field"><label className="label">Primary genre *</label><input className="inp" placeholder="e.g. Jazz, Indie Folk, Electronic, Soul…" value={p.genre} onChange={e=>up("genre",e.target.value)}/></div>
-          <div className="field"><label className="label">Artists you sound like</label><input className="inp" placeholder="e.g. Jorja Smith, Tom Misch, Loyle Carner" value={p.similarArtists} onChange={e=>up("similarArtists",e.target.value)}/></div>
-          <div className="field"><label className="label">Short bio</label><textarea className="inp" placeholder="A sentence or two about your music and vibe…" value={p.bio} onChange={e=>up("bio",e.target.value)}/></div>
+      title: "Tell us about your music",
+      sub: "The AI uses this to score venue matches and write emails.",
+      ok: () => !!p.genre,
+      body: (
+        <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+          <div className="field"><label className="label">Genre *</label><input className="inp" placeholder="e.g. Jazz, Indie Folk, Electronic, Neo-Soul…" value={p.genre} onChange={e=>up("genre",e.target.value)} /></div>
+          <div className="field"><label className="label">Artists you sound like</label><input className="inp" placeholder="e.g. Jorja Smith, Tom Misch, Loyle Carner" value={p.similarArtists} onChange={e=>up("similarArtists",e.target.value)} /></div>
+          <div className="field"><label className="label">Short bio</label><textarea className="inp" placeholder="A sentence or two about your music…" value={p.bio} onChange={e=>up("bio",e.target.value)} /></div>
         </div>
-      ),
-      ok:()=>!!p.genre
+      )
     },
     {
-      title:"Add your music links",
-      sub:"Included automatically in every booking email.",
-      body:(
-        <div style={{display:"flex",flexDirection:"column",gap:14}}>
-          <div className="field"><label className="label">Spotify</label><input className="inp" placeholder="https://open.spotify.com/artist/…" value={p.spotify} onChange={e=>up("spotify",e.target.value)}/></div>
-          <div className="field"><label className="label">SoundCloud</label><input className="inp" placeholder="https://soundcloud.com/…" value={p.soundcloud} onChange={e=>up("soundcloud",e.target.value)}/></div>
-          <div className="field"><label className="label">Instagram</label><input className="inp" placeholder="https://instagram.com/…" value={p.instagram} onChange={e=>up("instagram",e.target.value)}/></div>
+      title: "Add your links",
+      sub: "These are included automatically in every booking email.",
+      ok: () => true,
+      body: (
+        <div style={{ display:"flex", flexDirection:"column", gap:13 }}>
+          <div className="field"><label className="label">Spotify</label><input className="inp" placeholder="https://open.spotify.com/artist/…" value={p.spotify} onChange={e=>up("spotify",e.target.value)} /></div>
+          <div className="field"><label className="label">SoundCloud</label><input className="inp" placeholder="https://soundcloud.com/…" value={p.soundcloud} onChange={e=>up("soundcloud",e.target.value)} /></div>
+          <div className="field"><label className="label">Instagram</label><input className="inp" placeholder="https://instagram.com/…" value={p.instagram} onChange={e=>up("instagram",e.target.value)} /></div>
+          <div className="field"><label className="label">Website</label><input className="inp" placeholder="https://yourwebsite.com" value={p.website} onChange={e=>up("website",e.target.value)} /></div>
         </div>
-      ),
-      ok:()=>true
-    },
+      )
+    }
   ];
 
   const finish = async () => {
     setSaving(true);
-    if(supabase && user.id !== "demo") {
-      await supabase.from("profiles").upsert({user_id:user.id,artist_name:p.artistName,area:p.area,genre:p.genre,similar_artists:p.similarArtists,bio:p.bio,spotify:p.spotify,soundcloud:p.soundcloud,instagram:p.instagram});
+    if (sb && user.id !== "demo") {
+      await sb.from("profiles").upsert({
+        user_id: user.id, artist_name:p.artistName, area:p.area, genre:p.genre,
+        similar_artists:p.similarArtists, bio:p.bio, spotify:p.spotify,
+        soundcloud:p.soundcloud, instagram:p.instagram, website:p.website
+      });
     }
-    onComplete(p);
-    setSaving(false);
+    onDone(p);
   };
 
   const cur = steps[step];
   return (
-    <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",padding:24,background:"var(--bg)"}}>
-      <div style={{width:"100%",maxWidth:520}} className="fade">
-        <div style={{fontFamily:"var(--font-d)",fontSize:11,color:"var(--gold)",fontWeight:700,letterSpacing:".1em",textTransform:"uppercase",marginBottom:10}}>Step {step+1} of {steps.length}</div>
-        <h1 style={{fontSize:26,fontWeight:800,marginBottom:6,letterSpacing:"-.02em"}}>{cur.title}</h1>
-        <p style={{color:"var(--text2)",marginBottom:28,fontSize:13,fontWeight:300}}>{cur.sub}</p>
-        <div className="step-dots">{steps.map((_,i)=><div key={i} className={`step-dot ${i<step?"done":i===step?"active":""}`}/>)}</div>
+    <div style={{ minHeight:"100vh", display:"flex", alignItems:"center", justifyContent:"center", padding:24, background:"var(--bg)" }}>
+      <div style={{ width:"100%", maxWidth:500 }} className="fade">
+        <div style={{ fontFamily:"var(--fd)", fontSize:10, color:"var(--orangeHi)", fontWeight:700, letterSpacing:".1em", textTransform:"uppercase", marginBottom:8 }}>Step {step+1} of {steps.length}</div>
+        <h1 style={{ fontSize:24, fontWeight:700, marginBottom:5 }}>{cur.title}</h1>
+        <p style={{ color:"var(--text2)", marginBottom:26, fontSize:13 }}>{cur.sub}</p>
+        <div className="steps">{steps.map((_,i) => <div key={i} className={`step-dot${i<step?" done":i===step?" cur":""}`} />)}</div>
         {cur.body}
-        <div style={{display:"flex",justifyContent:"space-between",marginTop:28}}>
-          {step>0?<button className="btn btn-outline" onClick={()=>setStep(s=>s-1)}>← Back</button>:<div/>}
-          <button className="btn btn-gold" disabled={!cur.ok()||saving}
-            onClick={()=>step<steps.length-1?setStep(s=>s+1):finish()}>
-            {saving?"Saving…":step<steps.length-1?"Continue →":"Let's go 🎵"}
+        <div style={{ display:"flex", justifyContent:"space-between", marginTop:26 }}>
+          {step > 0 ? <button className="btn btn-outline" onClick={() => setStep(s=>s-1)}>← Back</button> : <div />}
+          <button className="btn btn-primary" disabled={!cur.ok() || saving}
+            onClick={() => step < steps.length-1 ? setStep(s=>s+1) : finish()}>
+            {saving ? "Saving…" : step < steps.length-1 ? "Continue →" : "Let's go 🎵"}
           </button>
         </div>
       </div>
@@ -733,86 +1065,90 @@ function Onboarding({user, onComplete}) {
 }
 
 // ─── DASHBOARD ────────────────────────────────────────────────────────────────
-function Dashboard({profile, outreach, matchedVenues, onGoDiscover, plan}) {
-  const replied = outreach.filter(o=>o.status==="replied"||o.status==="booked").length;
-  const sent = outreach.length;
-  const top3 = matchedVenues.slice(0,3);
+function Dashboard({ profile, outreach, matched, plan, onDiscover }: { profile:Profile; outreach:OutreachEntry[]; matched:Venue[]; plan:Plan; onDiscover:()=>void }) {
+  const replied = outreach.filter(o => o.status==="replied"||o.status==="booked").length;
+  const top3 = matched.slice(0, 3);
 
   return (
     <div className="page fade">
       <div className="ph">
-        <h1>Good to see you, {profile.artistName} 👋</h1>
-        <p>Your booking activity and top London venue matches.</p>
+        <h1>Hey {profile.artistName} 👋</h1>
+        <p>Your booking activity at a glance.</p>
       </div>
 
-      {DEMO_MODE&&<div className="demo-banner">🎭 Running in demo mode. Add your environment variables in Vercel to enable real auth, payments, and AI.</div>}
+      {DEMO && (
+        <div className="demo-pill" style={{ marginBottom:20 }}>
+          🎭 Running in demo mode. Add <code>VITE_SUPABASE_URL</code>, <code>VITE_ANTHROPIC_KEY</code>, and <code>VITE_STRIPE_PUBLISHABLE_KEY</code> in Vercel to go fully live.
+        </div>
+      )}
 
-      <div className="g4" style={{marginBottom:28}}>
+      <div className="g4" style={{ marginBottom:26 }}>
         {[
-          {n:sent,l:"Emails sent",d:"Total outreach",c:"var(--text)"},
-          {n:replied,l:"Positive replies",d:`${sent?Math.round(replied/sent*100):0}% response rate`,c:"var(--emerald)"},
-          {n:matchedVenues.length,l:"Venue matches",d:"Across London",c:"var(--gold)"},
-          {n:plan==="pro"?"Pro":plan==="artist"?"Artist":"Free",l:"Current plan",d:plan==="free"?"Upgrade for more →":"Active",c:"var(--sky)"},
-        ].map(s=>(
+          { n:outreach.length,      l:"Emails sent",     d:"Total outreach",            c:"var(--text)" },
+          { n:replied,              l:"Positive replies", d:`${outreach.length?Math.round(replied/outreach.length*100):0}% reply rate`, c:"var(--green)" },
+          { n:matched.length,       l:"Venue matches",   d:"Scored across London",      c:"var(--orangeHi)" },
+          { n:PLANS[plan].name,     l:"Current plan",    d:plan==="free"?"Upgrade for more →":"Active", c:"var(--blue)" },
+        ].map(s => (
           <div className="stat" key={s.l}>
-            <div className="stat-n" style={{color:s.c}}>{s.n}</div>
+            <div className="stat-n" style={{ color:s.c }}>{s.n}</div>
             <div className="stat-l">{s.l}</div>
             <div className="stat-d">{s.d}</div>
           </div>
         ))}
       </div>
 
-      <div className="g2" style={{gap:24,alignItems:"start"}}>
+      <div className="g2" style={{ gap:22, alignItems:"start" }}>
         <div>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
-            <h3 style={{fontSize:15,fontWeight:700,fontFamily:"var(--font-d)"}}>Top venue matches</h3>
-            <button className="btn btn-ghost btn-sm" onClick={onGoDiscover}>See all →</button>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:13 }}>
+            <h3 style={{ fontSize:14, fontWeight:700, fontFamily:"var(--fd)" }}>Top venue matches</h3>
+            <button className="btn btn-ghost btn-sm" onClick={onDiscover}>See all →</button>
           </div>
-          <div style={{display:"flex",flexDirection:"column",gap:10}}>
-            {top3.map(v=>{
-              const sc = scoreColor(v.score);
-              return(
-                <div className="card2" key={v.id} style={{display:"flex",gap:12,alignItems:"center"}}>
-                  <div className="score-ring" style={{background:sc.bg,color:sc.c,width:44,height:44,fontSize:14,fontFamily:"var(--font-d)",fontWeight:800}}>{v.score}</div>
-                  <div style={{flex:1}}>
-                    <div style={{fontWeight:600,fontSize:13}}>{v.name}</div>
-                    <div style={{color:"var(--text2)",fontSize:11,marginTop:2}}>{v.area} · <span style={{color:sc.c}}>{v.genreMatch} genre fit</span></div>
+          <div style={{ display:"flex", flexDirection:"column", gap:9 }}>
+            {top3.map(v => {
+              const sc = scoreStyle(v.score!);
+              const tb = tierBadge(v.tier);
+              return (
+                <div className="card2" key={v.id} style={{ display:"flex", gap:11, alignItems:"center" }}>
+                  <div className="score-ring" style={{ background:sc.bg, color:sc.c, width:42, height:42, fontSize:13, fontFamily:"var(--fd)", fontWeight:700 }}>{v.score}</div>
+                  <div style={{ flex:1 }}>
+                    <div style={{ fontWeight:600, fontSize:13 }}>{v.name}</div>
+                    <div style={{ color:"var(--text2)", fontSize:11, marginTop:1 }}>{v.area} · <span style={{ color:sc.c }}>{v.genreMatch} fit</span></div>
                   </div>
-                  <span className={`badge ${tierColor(v.tier)}`}>{tierLabel(v.tier)}</span>
+                  <span className={`badge ${tb.cls}`}>{tb.lbl}</span>
                 </div>
               );
             })}
-            {top3.length===0&&<div className="card2" style={{textAlign:"center",color:"var(--text3)",padding:"24px 0"}}>Complete your profile to see matches</div>}
+            {top3.length === 0 && <div className="card2" style={{ textAlign:"center", color:"var(--text3)", padding:"20px 0", fontSize:13 }}>Complete your profile to see matches</div>}
           </div>
         </div>
 
         <div>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
-            <h3 style={{fontSize:15,fontWeight:700,fontFamily:"var(--font-d)"}}>Recent outreach</h3>
-            <span style={{color:"var(--text3)",fontSize:11}}>Last 30 days</span>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:13 }}>
+            <h3 style={{ fontSize:14, fontWeight:700, fontFamily:"var(--fd)" }}>Recent outreach</h3>
+            <span style={{ color:"var(--text3)", fontSize:11 }}>Latest activity</span>
           </div>
-          <div className="card" style={{padding:0}}>
-            {outreach.slice(0,5).map((o,i)=>(
-              <div key={o.id} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 18px",borderBottom:i<Math.min(4,outreach.length-1)?"1px solid var(--border)":""}}>
-                <div style={{flex:1}}>
-                  <div style={{fontWeight:600,fontSize:13}}>{o.venue}</div>
-                  <div style={{color:"var(--text3)",fontSize:11,marginTop:1}}>{fmtDate(o.date)}</div>
+          <div className="card" style={{ padding:0 }}>
+            {outreach.slice(0,5).map((o,i) => (
+              <div key={o.id} style={{ display:"flex", alignItems:"center", gap:11, padding:"12px 16px", borderBottom:i<Math.min(4,outreach.length-1)?"1px solid var(--border)":"" }}>
+                <div style={{ flex:1 }}>
+                  <div style={{ fontWeight:600, fontSize:13 }}>{o.venue}</div>
+                  <div style={{ color:"var(--text3)", fontSize:11, marginTop:1 }}>{fmtDate(o.date)}</div>
                 </div>
-                <StatusBadge s={o.status}/>
+                <StatusBadge s={o.status} />
               </div>
             ))}
-            {outreach.length===0&&<div style={{padding:28,textAlign:"center",color:"var(--text3)",fontSize:13}}>No outreach yet — find venues and write your first email!</div>}
+            {outreach.length === 0 && <div style={{ padding:28, textAlign:"center", color:"var(--text3)", fontSize:13 }}>No outreach yet. Find venues and send your first email!</div>}
           </div>
         </div>
       </div>
 
-      <div className="card" style={{marginTop:24}}>
-        <h3 style={{fontSize:15,fontWeight:700,fontFamily:"var(--font-d)",marginBottom:16}}>Your artist profile</h3>
-        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:12}}>
-          {[{l:"Artist name",v:profile.artistName},{l:"Area",v:profile.area},{l:"Genre",v:profile.genre},{l:"Sounds like",v:profile.similarArtists||"—"}].map(r=>(
-            <div key={r.l} style={{background:"var(--surface)",borderRadius:"var(--r)",padding:"11px 13px"}}>
-              <div style={{color:"var(--text3)",fontSize:10,fontWeight:700,textTransform:"uppercase",letterSpacing:".08em",marginBottom:4,fontFamily:"var(--font-d)"}}>{r.l}</div>
-              <div style={{fontWeight:500,fontSize:13}}>{r.v}</div>
+      <div className="card" style={{ marginTop:22 }}>
+        <h3 style={{ fontSize:14, fontWeight:700, fontFamily:"var(--fd)", marginBottom:14 }}>Your profile</h3>
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))", gap:10 }}>
+          {[{l:"Artist",v:profile.artistName},{l:"Area",v:profile.area},{l:"Genre",v:profile.genre},{l:"Sounds like",v:profile.similarArtists||"—"}].map(r => (
+            <div key={r.l} style={{ background:"var(--surface)", borderRadius:"var(--r)", padding:"10px 12px" }}>
+              <div className="label" style={{ marginBottom:3 }}>{r.l}</div>
+              <div style={{ fontWeight:500, fontSize:13 }}>{r.v}</div>
             </div>
           ))}
         </div>
@@ -822,50 +1158,50 @@ function Dashboard({profile, outreach, matchedVenues, onGoDiscover, plan}) {
 }
 
 // ─── DISCOVER ─────────────────────────────────────────────────────────────────
-function Discover({profile, plan, matchedVenues, outreach, onSendEmail, onUpgrade}) {
-  const [search, setSearch] = useState("");
-  const [areaFilter, setAreaFilter] = useState("all");
-  const [genreFilter, setGenreFilter] = useState("all");
-  const [tierFilter, setTierFilter] = useState("all");
-  const isFree = plan==="free";
-  const areas = [...new Set(matchedVenues.map(v=>v.area))].sort();
-  const allGenres = [...new Set(matchedVenues.flatMap(v=>v.genres))].sort();
-  const contactedIds = new Set(outreach.map(o=>o.venueId));
+function Discover({ matched, outreach, plan, onEmail, onUpgrade }: { matched:Venue[]; outreach:OutreachEntry[]; plan:Plan; onEmail:(v:Venue)=>void; onUpgrade:()=>void }) {
+  const [q, setQ] = useState("");
+  const [area, setArea] = useState("all");
+  const [genre, setGenre] = useState("all");
+  const [tier, setTier] = useState("all");
+  const isFree = plan === "free";
+  const areas = [...new Set(matched.map(v => v.area))].sort();
+  const genres = [...new Set(matched.flatMap(v => v.genres))].sort();
+  const contacted = new Set(outreach.map(o => o.venueId));
 
-  const filtered = matchedVenues.filter(v=>{
-    const q = search.toLowerCase();
-    if(search&&!v.name.toLowerCase().includes(q)&&!v.area.toLowerCase().includes(q)&&!v.genres.some(g=>g.includes(q))) return false;
-    if(areaFilter!=="all"&&v.area!==areaFilter) return false;
-    if(genreFilter!=="all"&&!v.genres.includes(genreFilter)) return false;
-    if(tierFilter!=="all"&&v.tier!==tierFilter) return false;
+  const filtered = matched.filter(v => {
+    const qq = q.toLowerCase();
+    if (q && !v.name.toLowerCase().includes(qq) && !v.area.toLowerCase().includes(qq) && !v.genres.some(g => g.includes(qq))) return false;
+    if (area !== "all" && v.area !== area) return false;
+    if (genre !== "all" && !v.genres.includes(genre)) return false;
+    if (tier !== "all" && v.tier !== tier) return false;
     return true;
   });
 
   return (
     <div className="page fade">
-      <div className="ph"><h1>London Venue Matches</h1><p>55+ London venues scored by AI to match your sound.</p></div>
+      <div className="ph"><h1>London Venue Matches</h1><p>65 real London venues scored by AI to match your sound.</p></div>
 
-      {isFree&&(
+      {isFree && (
         <div className="up-banner">
           <div>
-            <div style={{fontFamily:"var(--font-d)",fontWeight:700,marginBottom:3}}>You're on the Free plan</div>
-            <div style={{color:"var(--text2)",fontSize:12}}>Showing 5 of {matchedVenues.length} matches. Upgrade to see all venues.</div>
+            <div style={{ fontFamily:"var(--fd)", fontWeight:600, marginBottom:2 }}>You're on the Free plan</div>
+            <div style={{ color:"var(--text2)", fontSize:12 }}>Showing 5 of {matched.length} matches. Upgrade to unlock all.</div>
           </div>
-          <button className="btn btn-gold btn-sm" onClick={onUpgrade}>Upgrade to Artist — £15/mo →</button>
+          <button className="btn btn-primary btn-sm" onClick={onUpgrade}>Upgrade to Artist — £15/mo →</button>
         </div>
       )}
 
-      <div style={{display:"flex",gap:10,marginBottom:20,flexWrap:"wrap"}}>
-        <input className="inp" placeholder="Search venues, areas, genres…" value={search} onChange={e=>setSearch(e.target.value)} style={{maxWidth:260}}/>
-        <select className="inp" value={areaFilter} onChange={e=>setAreaFilter(e.target.value)} style={{maxWidth:160}}>
+      <div style={{ display:"flex", gap:9, marginBottom:18, flexWrap:"wrap" }}>
+        <input className="inp" placeholder="Search venues, areas, genres…" value={q} onChange={e=>setQ(e.target.value)} style={{ maxWidth:250 }} />
+        <select className="inp" value={area} onChange={e=>setArea(e.target.value)} style={{ maxWidth:150 }}>
           <option value="all">All areas</option>
-          {areas.map(a=><option key={a} value={a}>{a}</option>)}
+          {areas.map(a => <option key={a} value={a}>{a}</option>)}
         </select>
-        <select className="inp" value={genreFilter} onChange={e=>setGenreFilter(e.target.value)} style={{maxWidth:160}}>
+        <select className="inp" value={genre} onChange={e=>setGenre(e.target.value)} style={{ maxWidth:150 }}>
           <option value="all">All genres</option>
-          {allGenres.slice(0,24).map(g=><option key={g} value={g}>{g}</option>)}
+          {genres.slice(0,28).map(g => <option key={g} value={g}>{g}</option>)}
         </select>
-        <select className="inp" value={tierFilter} onChange={e=>setTierFilter(e.target.value)} style={{maxWidth:140}}>
+        <select className="inp" value={tier} onChange={e=>setTier(e.target.value)} style={{ maxWidth:135 }}>
           <option value="all">All tiers</option>
           <option value="grassroots">Grassroots</option>
           <option value="mid">Mid-size</option>
@@ -873,44 +1209,47 @@ function Discover({profile, plan, matchedVenues, outreach, onSendEmail, onUpgrad
           <option value="iconic">Iconic</option>
           <option value="large">Major</option>
         </select>
-        <div style={{marginLeft:"auto",display:"flex",alignItems:"center",color:"var(--text3)",fontSize:12}}>{filtered.length} venues</div>
+        <div style={{ marginLeft:"auto", display:"flex", alignItems:"center", color:"var(--text3)", fontSize:12 }}>{filtered.length} venues</div>
       </div>
 
-      <div style={{display:"flex",flexDirection:"column",gap:12}}>
-        {filtered.map((v,idx)=>{
-          const locked = isFree&&idx>=5;
-          const sc = scoreColor(v.score);
-          const contacted = contactedIds.has(v.id);
+      <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+        {filtered.map((v, idx) => {
+          const locked = isFree && idx >= 5;
+          const sc = scoreStyle(v.score!);
+          const tb = tierBadge(v.tier);
+          const wasContacted = contacted.has(v.id);
           return (
-            <div key={v.id} className="vcard" style={{opacity:locked?0.45:1,filter:locked?"blur(4px)":"none",pointerEvents:locked?"none":"auto",position:"relative"}}>
-              <div className="score-ring" style={{background:sc.bg,color:sc.c,fontFamily:"var(--font-d)",fontWeight:800,fontSize:15}}>{v.score}</div>
-              <div style={{flex:1,minWidth:0}}>
-                <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",marginBottom:6}}>
-                  <span style={{fontFamily:"var(--font-d)",fontWeight:700,fontSize:16}}>{v.name}</span>
-                  <span style={{color:"var(--text3)",fontSize:12}}>· {v.area}</span>
-                  {v.capacity&&<span className="badge b-dim">Cap. {v.capacity.toLocaleString()}</span>}
-                  <span className={`badge ${tierColor(v.tier)}`}>{tierLabel(v.tier)}</span>
-                  {contacted&&<span className="badge b-gold">✓ Contacted</span>}
+            <div key={v.id} className="vcard" style={{ opacity:locked?.45:1, filter:locked?"blur(3px)":"none", pointerEvents:locked?"none":"auto" }}>
+              <div className="score-ring" style={{ background:sc.bg, color:sc.c, fontFamily:"var(--fd)", fontWeight:700, fontSize:14 }}>{v.score}</div>
+              <div style={{ flex:1, minWidth:0 }}>
+                <div style={{ display:"flex", alignItems:"center", gap:9, flexWrap:"wrap", marginBottom:5 }}>
+                  <span style={{ fontFamily:"var(--fd)", fontWeight:700, fontSize:15 }}>{v.name}</span>
+                  <span style={{ color:"var(--text3)", fontSize:12 }}>· {v.area}</span>
+                  {v.capacity && <span className="badge b-muted">Cap. {v.capacity.toLocaleString()}</span>}
+                  <span className={`badge ${tb.cls}`}>{tb.lbl}</span>
+                  {wasContacted && <span className="badge b-orange">✓ Contacted</span>}
                 </div>
-                <p style={{color:"var(--text2)",fontSize:12,marginBottom:8,lineHeight:1.55,fontWeight:300}}>{v.reason}</p>
-                <p style={{color:"var(--text3)",fontSize:11,marginBottom:8,fontStyle:"italic"}}>{v.description}</p>
-                <div style={{display:"flex",gap:5,flexWrap:"wrap",alignItems:"center"}}>
-                  {v.genres.slice(0,4).map(g=><span key={g} className="tag">{g}</span>)}
-                  <span className={`badge ${v.genreMatch==="high"?"b-emerald":v.genreMatch==="medium"?"b-gold":"b-crimson"}`}>{v.genreMatch} genre fit</span>
-                  <span className={`badge ${v.locMatch==="local"?"b-emerald":"b-sky"}`}>{v.locMatch==="local"?"Local to you":"London-wide"}</span>
+                <p style={{ color:"var(--text2)", fontSize:12, marginBottom:6, lineHeight:1.55 }}>{v.reason}</p>
+                <p style={{ color:"var(--text3)", fontSize:11, marginBottom:7, fontStyle:"italic" }}>{v.description}</p>
+                <div style={{ display:"flex", gap:4, flexWrap:"wrap", alignItems:"center" }}>
+                  {v.genres.slice(0,4).map(g => <span key={g} className="tag">{g}</span>)}
+                  <span className={`badge ${v.genreMatch==="high"?"b-green":v.genreMatch==="medium"?"b-orange":"b-red"}`}>{v.genreMatch} genre fit</span>
+                  <span className={`badge ${v.locMatch==="local"?"b-green":"b-blue"}`}>{v.locMatch==="local"?"Local to you":"London-wide"}</span>
                 </div>
               </div>
-              <div style={{display:"flex",flexDirection:"column",gap:8,flexShrink:0,minWidth:124}}>
-                <button className="btn btn-gold btn-sm" onClick={()=>onSendEmail(v)}>✉ Write email</button>
-                {v.website&&<a href={`https://${v.website}`} target="_blank" rel="noreferrer" className="btn btn-outline btn-sm" style={{justifyContent:"center"}}>↗ Website</a>}
-                {v.email&&<div style={{fontSize:10,color:"var(--text3)",textAlign:"center",wordBreak:"break-all",lineHeight:1.4}}>{v.email}</div>}
+              <div style={{ display:"flex", flexDirection:"column", gap:7, flexShrink:0, minWidth:116 }}>
+                <button className="btn btn-primary btn-sm" onClick={() => onEmail(v)}>✉ Write email</button>
+                {v.website && (
+                  <a href={`https://${v.website}`} target="_blank" rel="noreferrer" className="btn btn-outline btn-sm" style={{ justifyContent:"center" }}>↗ Website</a>
+                )}
+                {v.email && <div style={{ fontSize:10, color:"var(--text3)", textAlign:"center", lineHeight:1.4, wordBreak:"break-all" }}>{v.email}</div>}
               </div>
             </div>
           );
         })}
-        {filtered.length===0&&(
-          <div style={{textAlign:"center",padding:60,color:"var(--text3)"}}>
-            <div style={{fontSize:36,marginBottom:12}}>🔍</div>
+        {filtered.length === 0 && (
+          <div style={{ textAlign:"center", padding:52, color:"var(--text3)" }}>
+            <div style={{ fontSize:32, marginBottom:10 }}>🔍</div>
             No venues match these filters.
           </div>
         )}
@@ -920,70 +1259,76 @@ function Discover({profile, plan, matchedVenues, outreach, onSendEmail, onUpgrad
 }
 
 // ─── EMAIL MODAL ──────────────────────────────────────────────────────────────
-function EmailModal({venue, profile, plan, outreachCount, onClose, onSend, showToast}) {
+function EmailModal({ venue, profile, plan, usedEmails, onClose, onSent, toast }: {
+  venue:Venue; profile:Profile; plan:Plan; usedEmails:number;
+  onClose:()=>void; onSent:(subject:string,body:string)=>void; toast:(m:string,t?:ToastType)=>void;
+}) {
   const [subj, setSubj] = useState("");
   const [body, setBody] = useState("");
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
-  const monthlyLimit = plan==="free"?3:plan==="artist"?50:9999;
-  const atLimit = outreachCount>=monthlyLimit;
+  const limit = PLANS[plan].emailLimit;
+  const atLimit = usedEmails >= limit;
 
-  const mockEmail = () => {
+  const mockEmail = useCallback(() => {
     setSubj(`Booking enquiry – ${profile.artistName}`);
-    setBody(`Hi ${venue.name} team,\n\nI'm ${profile.artistName}, a ${profile.genre} artist based in ${profile.area||"London"}${profile.similarArtists?`, drawing comparisons to ${profile.similarArtists.split(",").slice(0,2).map(s=>s.trim()).join(" and ")}`:""} .\n\n${profile.bio||"I have been building a strong local following and am actively developing my live performance schedule."}\n\nI'd love to explore the possibility of performing at ${venue.name}. Your programming of ${venue.genres.slice(0,2).join(" and ")} feels like a natural home for my music.\n\n${profile.spotify?`You can hear my music here: ${profile.spotify}\n\n`:""}I'm flexible on dates and happy to discuss whatever format works for you.\n\nBest wishes,\n${profile.artistName}${profile.instagram?`\n${profile.instagram}`:""}`);
-  };
+    const links = [profile.spotify, profile.soundcloud, profile.instagram, profile.website].filter(Boolean);
+    setBody(`Hi ${venue.name} team,\n\nI'm ${profile.artistName}, a ${profile.genre} artist based in ${profile.area || "London"}${profile.similarArtists ? `, drawing comparisons to ${profile.similarArtists.split(",").slice(0,2).map(s=>s.trim()).join(" and ")}` : ""}.\n\n${profile.bio || "I've been building a strong following and am actively developing my live show schedule."}\n\nI'd love to explore performing at ${venue.name}. Your programming of ${venue.genres.slice(0,2).join(" and ")} feels like a natural home for my music.\n\n${links.length ? `You can hear my music here:\n${links.join("\n")}\n\n` : ""}I'm flexible on dates and happy to discuss whatever format works for you.\n\nBest,\n${profile.artistName}`);
+  }, [profile, venue]);
 
-  const gen = async () => {
+  const gen = useCallback(async () => {
     setLoading(true);
     const res = await generateEmail(profile, venue);
-    if(res?.subject&&res?.body) { setSubj(res.subject); setBody(res.body); }
+    if (res?.subject && res?.body) { setSubj(res.subject); setBody(res.body); }
     else mockEmail();
     setLoading(false);
-  };
+  }, [profile, venue, mockEmail]);
 
-  useEffect(()=>{gen();},[]);
+  useEffect(() => { gen(); }, [gen]);
 
   const send = async () => {
-    if(atLimit){showToast("Monthly email limit reached. Upgrade for more.","err");return;}
+    if (atLimit) { toast("Monthly email limit reached. Upgrade for more.", "err"); return; }
     setSending(true);
-    const sent = await sendViaResend(venue.email, subj, body, profile.artistName);
-    if(!sent&&venue.email) {
-      // Fallback: open mailto
+    // Try Resend API first
+    const ok = await sendEmail(venue.email, subj, body, profile.artistName);
+    if (!ok && venue.email) {
+      // Fallback to mailto
       window.open(`mailto:${venue.email}?subject=${encodeURIComponent(subj)}&body=${encodeURIComponent(body)}`);
     }
-    onSend({venue, subject:subj, body});
-    showToast(`Email sent to ${venue.name}! 🎉`);
+    // Save to Supabase if connected
+    onSent(subj, body);
+    toast(`Email sent to ${venue.name}! 🎉`);
     setSending(false);
     onClose();
   };
 
   return (
-    <div className="overlay" onClick={e=>e.target===e.currentTarget&&onClose()}>
-      <div className="modal" style={{maxWidth:600}}>
+    <div className="overlay" onClick={e => e.target===e.currentTarget && onClose()}>
+      <div className="modal" style={{ maxWidth:580 }}>
         <button className="modal-x" onClick={onClose}>×</button>
-        <div style={{fontFamily:"var(--font-d)",fontSize:20,fontWeight:800,marginBottom:3,letterSpacing:"-.02em"}}>Email to {venue.name}</div>
-        <div style={{color:"var(--text3)",fontSize:12,marginBottom:22}}>📧 {venue.email||"contact via website"} · {venue.area}</div>
+        <h2 style={{ fontSize:18, fontWeight:700, marginBottom:3 }}>Email to {venue.name}</h2>
+        <p style={{ color:"var(--text3)", fontSize:12, marginBottom:20 }}>📧 {venue.email || "No booking email — use website"} · {venue.area}</p>
 
-        {loading?(
-          <div style={{display:"flex",flexDirection:"column",gap:10}}>
-            <div className="shimmer" style={{height:42}}/>
-            <div className="shimmer" style={{height:200}}/>
-            <p style={{textAlign:"center",color:"var(--text2)",fontSize:12,padding:"6px 0",fontWeight:300}}>✨ Writing your personalised email…</p>
+        {loading ? (
+          <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+            <div className="shimmer" style={{ height:42 }} />
+            <div className="shimmer" style={{ height:200 }} />
+            <p style={{ textAlign:"center", color:"var(--text2)", fontSize:12, padding:"6px 0" }}>✨ Generating your personalised email…</p>
           </div>
-        ):(
-          <div style={{display:"flex",flexDirection:"column",gap:14}}>
-            {atLimit&&<div style={{background:"var(--crimsonDim)",border:"1px solid rgba(240,83,101,.2)",borderRadius:8,padding:"10px 14px",color:"var(--crimson)",fontSize:12}}>Monthly limit reached ({monthlyLimit} emails on your {plan} plan). Upgrade for more.</div>}
-            <div className="field"><label className="label">Subject</label><input className="inp" value={subj} onChange={e=>setSubj(e.target.value)}/></div>
-            <div className="field"><label className="label">Email body</label><textarea className="inp" style={{minHeight:240}} value={body} onChange={e=>setBody(e.target.value)}/></div>
-            <div style={{display:"flex",gap:8,justifyContent:"flex-end",flexWrap:"wrap"}}>
-              <button className="btn btn-ghost btn-sm" onClick={gen} disabled={loading}>↺ Regenerate</button>
+        ) : (
+          <div style={{ display:"flex", flexDirection:"column", gap:13 }}>
+            {atLimit && <div style={{ background:"var(--redDim)", border:"1px solid rgba(239,68,68,.2)", borderRadius:7, padding:"10px 13px", color:"var(--red)", fontSize:12 }}>Monthly limit reached ({limit} emails on {plan} plan). Upgrade for more.</div>}
+            <div className="field"><label className="label">Subject</label><input className="inp" value={subj} onChange={e=>setSubj(e.target.value)} /></div>
+            <div className="field"><label className="label">Email body</label><textarea className="inp" style={{ minHeight:220 }} value={body} onChange={e=>setBody(e.target.value)} /></div>
+            <div style={{ display:"flex", gap:7, justifyContent:"flex-end", flexWrap:"wrap" }}>
+              <button className="btn btn-ghost btn-sm" onClick={gen}>↺ Regenerate</button>
               <button className="btn btn-outline btn-sm" onClick={onClose}>Cancel</button>
-              <button className="btn btn-gold" onClick={send} disabled={sending||atLimit}>
-                {sending?"Sending…":"Send email →"}
+              <button className="btn btn-primary" onClick={send} disabled={sending||atLimit}>
+                {sending ? "Sending…" : "Send email →"}
               </button>
             </div>
-            <p style={{fontSize:11,color:"var(--text3)",textAlign:"center"}}>
-              {venue.email?"Email sent via Resend (or mailto fallback if API not configured)":"No booking email found — use the website link to contact them."}
+            <p style={{ fontSize:11, color:"var(--text3)", textAlign:"center" }}>
+              {venue.email ? "Sends via Resend API — or opens your email client as a fallback." : "No booking email listed — visit their website directly."}
             </p>
           </div>
         )}
@@ -992,118 +1337,147 @@ function EmailModal({venue, profile, plan, outreachCount, onClose, onSend, showT
   );
 }
 
-// ─── OUTREACH TRACKER ─────────────────────────────────────────────────────────
-function OutreachPage({outreach, setOutreach, plan, onUpgrade}) {
-  const [filter, setFilter] = useState("all");
-  const [noteId, setNoteId] = useState(null);
-  const [noteTxt, setNoteTxt] = useState("");
+// ─── OUTREACH ─────────────────────────────────────────────────────────────────
+function OutreachPage({ outreach, setOutreach, plan, onUpgrade }: { outreach:OutreachEntry[]; setOutreach:React.Dispatch<React.SetStateAction<OutreachEntry[]>>; plan:Plan; onUpgrade:()=>void }) {
+  const [filter, setFilter] = useState<string>("all");
+  const [noteId, setNoteId] = useState<string|null>(null);
+  const [noteText, setNoteText] = useState("");
 
-  if(plan==="free") return(
-    <div className="page fade" style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",minHeight:400,textAlign:"center"}}>
-      <div style={{fontSize:52,marginBottom:18}}>📊</div>
-      <h2 style={{fontSize:24,fontWeight:800,marginBottom:8,fontFamily:"var(--font-d)"}}>Outreach tracking is a paid feature</h2>
-      <p style={{color:"var(--text2)",maxWidth:380,marginBottom:28,lineHeight:1.65,fontSize:13,fontWeight:300}}>Upgrade to track every email, see reply status, and manage follow-ups from one place.</p>
-      <button className="btn btn-gold btn-lg" onClick={onUpgrade}>Upgrade to Artist — £15/mo</button>
+  if (plan === "free") return (
+    <div className="page fade" style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", minHeight:400, textAlign:"center" }}>
+      <div style={{ fontSize:46, marginBottom:16 }}>📊</div>
+      <h2 style={{ fontSize:22, fontWeight:700, marginBottom:7 }}>Outreach tracking is a paid feature</h2>
+      <p style={{ color:"var(--text2)", maxWidth:360, marginBottom:26, lineHeight:1.65, fontSize:13 }}>Track every email, reply and follow-up — all in one place. Upgrade to start.</p>
+      <button className="btn btn-primary btn-lg" onClick={onUpgrade}>Upgrade to Artist — £15/month</button>
     </div>
   );
 
-  const counts = {all:outreach.length,replied:outreach.filter(o=>o.status==="replied"||o.status==="booked").length,sent:outreach.filter(o=>o.status==="sent").length,no_response:outreach.filter(o=>o.status==="no_response").length};
-  const shown = filter==="all"?outreach:outreach.filter(o=>filter==="replied"?(o.status==="replied"||o.status==="booked"):o.status===filter);
+  const counts: Record<string,number> = {
+    all: outreach.length,
+    replied: outreach.filter(o => o.status==="replied"||o.status==="booked").length,
+    sent: outreach.filter(o => o.status==="sent").length,
+    no_response: outreach.filter(o => o.status==="no_response").length,
+  };
 
-  const updateStatus = (id,status) => setOutreach(prev=>prev.map(o=>o.id===id?{...o,status}:o));
-  const saveNote = (id) => {setOutreach(prev=>prev.map(o=>o.id===id?{...o,notes:noteTxt}:o));setNoteId(null);};
+  const shown = filter === "all" ? outreach
+    : outreach.filter(o => filter==="replied" ? (o.status==="replied"||o.status==="booked") : o.status===filter);
 
-  return(
+  const updateStatus = (id: string, status: OutreachEntry["status"]) =>
+    setOutreach(prev => prev.map(o => o.id===id ? {...o,status} : o));
+
+  const saveNote = (id: string) => {
+    setOutreach(prev => prev.map(o => o.id===id ? {...o,notes:noteText} : o));
+    setNoteId(null);
+  };
+
+  return (
     <div className="page fade">
-      <div className="ph"><h1>Outreach Tracker</h1><p>Track every email, reply, and follow-up.</p></div>
+      <div className="ph"><h1>Outreach Tracker</h1><p>Track every email, reply and follow-up.</p></div>
 
-      <div className="g4" style={{marginBottom:24}}>
+      <div className="g4" style={{ marginBottom:22 }}>
         {[
-          {n:counts.all,l:"Total sent",c:"var(--text)"},
-          {n:counts.replied,l:"Positive replies",c:"var(--emerald)"},
-          {n:counts.sent,l:"Awaiting reply",c:"var(--sky)"},
-          {n:counts.no_response,l:"No response",c:"var(--text3)"},
-        ].map(s=><div className="stat" key={s.l}><div className="stat-n" style={{color:s.c}}>{s.n}</div><div className="stat-l">{s.l}</div></div>)}
+          { n:counts.all, l:"Total sent", c:"var(--text)" },
+          { n:counts.replied, l:"Positive replies", c:"var(--green)" },
+          { n:counts.sent, l:"Awaiting reply", c:"var(--blue)" },
+          { n:counts.no_response, l:"No response", c:"var(--text3)" },
+        ].map(s => (
+          <div className="stat" key={s.l}><div className="stat-n" style={{ color:s.c }}>{s.n}</div><div className="stat-l">{s.l}</div></div>
+        ))}
       </div>
 
-      <div style={{display:"flex",gap:8,marginBottom:20,flexWrap:"wrap"}}>
-        {[["all","All"],["replied","Replied"],["sent","Sent"],["no_response","No response"]].map(([k,l])=>(
-          <button key={k} className={`btn btn-sm ${filter===k?"btn-gold":"btn-outline"}`} onClick={()=>setFilter(k)}>
-            {l} <span style={{background:"rgba(255,255,255,.08)",borderRadius:99,padding:"1px 7px",fontSize:10,marginLeft:4}}>{counts[k]}</span>
+      <div style={{ display:"flex", gap:8, marginBottom:18, flexWrap:"wrap" }}>
+        {(["all","replied","sent","no_response"] as const).map(k => (
+          <button key={k} className={`btn btn-sm ${filter===k?"btn-primary":"btn-outline"}`} onClick={() => setFilter(k)}>
+            {k==="all"?"All":k==="replied"?"Replied":k==="sent"?"Sent":"No response"}
+            <span style={{ background:"rgba(255,255,255,.07)", borderRadius:99, padding:"1px 6px", fontSize:10, marginLeft:4 }}>{counts[k]}</span>
           </button>
         ))}
       </div>
 
-      <div className="card" style={{padding:0,overflowX:"auto"}}>
+      <div className="card" style={{ padding:0, overflowX:"auto" }}>
         <table className="tbl">
-          <thead><tr><th>Venue</th><th>Area</th><th>Date</th><th>Status</th><th>Notes</th><th>Actions</th></tr></thead>
+          <thead>
+            <tr><th>Venue</th><th>Area</th><th>Date</th><th>Status</th><th>Notes</th><th>Actions</th></tr>
+          </thead>
           <tbody>
-            {shown.map(o=>(
+            {shown.map(o => (
               <tr key={o.id}>
-                <td style={{fontWeight:600}}>{o.venue}</td>
-                <td style={{color:"var(--text2)"}}>{o.area}</td>
-                <td style={{color:"var(--text2)"}}>{fmtDate(o.date)}</td>
-                <td><StatusBadge s={o.status}/></td>
-                <td style={{maxWidth:200}}>
-                  {noteId===o.id?(
-                    <div style={{display:"flex",gap:5}}>
-                      <input className="inp" style={{padding:"4px 8px",fontSize:12}} value={noteTxt} onChange={e=>setNoteTxt(e.target.value)} autoFocus/>
-                      <button className="btn btn-emerald btn-sm" style={{padding:"4px 10px"}} onClick={()=>saveNote(o.id)}>✓</button>
+                <td style={{ fontWeight:600 }}>{o.venue}</td>
+                <td style={{ color:"var(--text2)" }}>{o.area}</td>
+                <td style={{ color:"var(--text2)" }}>{fmtDate(o.date)}</td>
+                <td><StatusBadge s={o.status} /></td>
+                <td style={{ maxWidth:180 }}>
+                  {noteId === o.id ? (
+                    <div style={{ display:"flex", gap:5 }}>
+                      <input className="inp" style={{ padding:"4px 8px", fontSize:12 }} value={noteText} onChange={e=>setNoteText(e.target.value)} autoFocus />
+                      <button className="btn btn-teal-gone btn-sm" style={{ padding:"4px 10px" }} onClick={() => saveNote(o.id)}>✓</button>
                     </div>
-                  ):(
-                    <span style={{color:"var(--text3)",fontSize:12,cursor:"pointer"}} onClick={()=>{setNoteId(o.id);setNoteTxt(o.notes||"");}}>
-                      {o.notes||<span style={{color:"var(--border2)"}}>+ Add note</span>}
+                  ) : (
+                    <span style={{ color:"var(--text3)", fontSize:12, cursor:"pointer" }} onClick={() => { setNoteId(o.id); setNoteText(o.notes||""); }}>
+                      {o.notes || <span style={{ color:"var(--border2)" }}>+ Add note</span>}
                     </span>
                   )}
                 </td>
                 <td>
-                  <div style={{display:"flex",gap:5}}>
-                    {o.status!=="replied"&&o.status!=="booked"&&<button style={{background:"var(--emeraldDim)",color:"var(--emerald)",border:"1px solid rgba(45,212,160,.2)",borderRadius:6,padding:"3px 10px",fontSize:11,cursor:"pointer"}} onClick={()=>updateStatus(o.id,"replied")}>Replied</button>}
-                    {o.status==="replied"&&<button style={{background:"var(--goldDim)",color:"var(--gold)",border:"1px solid rgba(232,184,75,.2)",borderRadius:6,padding:"3px 10px",fontSize:11,cursor:"pointer"}} onClick={()=>updateStatus(o.id,"booked")}>Booked!</button>}
-                    {o.status==="sent"&&<button style={{background:"rgba(255,255,255,.04)",color:"var(--text3)",border:"1px solid var(--border)",borderRadius:6,padding:"3px 10px",fontSize:11,cursor:"pointer"}} onClick={()=>updateStatus(o.id,"no_response")}>No response</button>}
+                  <div style={{ display:"flex", gap:5 }}>
+                    {(o.status==="sent"||o.status==="no_response") && (
+                      <button style={{ background:"var(--greenDim)", color:"var(--green)", border:"1px solid rgba(45,212,191,.2)", borderRadius:6, padding:"3px 9px", fontSize:11, cursor:"pointer" }} onClick={() => updateStatus(o.id,"replied")}>Replied</button>
+                    )}
+                    {o.status==="replied" && (
+                      <button style={{ background:"var(--orangeDim)", color:"var(--orangeHi)", border:"1px solid rgba(245,166,35,.2)", borderRadius:6, padding:"3px 9px", fontSize:11, cursor:"pointer" }} onClick={() => updateStatus(o.id,"booked")}>Booked!</button>
+                    )}
+                    {o.status==="sent" && (
+                      <button style={{ background:"rgba(255,255,255,.04)", color:"var(--text3)", border:"1px solid var(--border)", borderRadius:6, padding:"3px 9px", fontSize:11, cursor:"pointer" }} onClick={() => updateStatus(o.id,"no_response")}>No response</button>
+                    )}
                   </div>
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
-        {shown.length===0&&<div style={{padding:40,textAlign:"center",color:"var(--text3)",fontSize:13}}>No outreach for this filter.</div>}
+        {shown.length === 0 && (
+          <div style={{ padding:36, textAlign:"center", color:"var(--text3)", fontSize:13 }}>No outreach for this filter.</div>
+        )}
       </div>
     </div>
   );
 }
 
 // ─── VENUE DATABASE ───────────────────────────────────────────────────────────
-function VenueDB({venues, setVenues, showToast}) {
-  const [search, setSearch] = useState("");
-  const [adding, setAdding] = useState(false);
+function VenueDB({ venues, setVenues, toast }: { venues:Venue[]; setVenues:React.Dispatch<React.SetStateAction<Venue[]>>; toast:(m:string,t?:ToastType)=>void }) {
+  const [q, setQ] = useState("");
   const [tierF, setTierF] = useState("all");
-  const [form, setForm] = useState({name:"",area:"",capacity:"",genres:"",website:"",email:"",tier:"grassroots"});
-  const up = (k,v) => setForm(x=>({...x,[k]:v}));
+  const [adding, setAdding] = useState(false);
+  const [form, setForm] = useState({ name:"", area:"", borough:"", capacity:"", genres:"", website:"", email:"", tier:"grassroots" });
+  const upF = (k: string, v: string) => setForm(x => ({ ...x, [k]:v }));
 
-  const filtered = venues.filter(v=>{
-    const q = search.toLowerCase();
-    const matchSearch = !search||v.name.toLowerCase().includes(q)||v.area.toLowerCase().includes(q)||v.genres.some(g=>g.includes(q));
-    const matchTier = tierF==="all"||v.tier===tierF;
-    return matchSearch&&matchTier;
+  const filtered = venues.filter(v => {
+    const qq = q.toLowerCase();
+    return (!q || v.name.toLowerCase().includes(qq) || v.area.toLowerCase().includes(qq) || v.genres.some(g=>g.includes(qq)))
+      && (tierF === "all" || v.tier === tierF);
   });
 
   const addVenue = () => {
-    if(!form.name||!form.area) return;
-    const nv = {id:Date.now(),name:form.name,area:form.area,city:"London",capacity:form.capacity?parseInt(form.capacity):null,genres:form.genres.split(",").map(g=>g.trim()).filter(Boolean),website:form.website,email:form.email,tier:form.tier,description:""};
-    setVenues(prev=>[...prev,nv]);
-    setForm({name:"",area:"",capacity:"",genres:"",website:"",email:"",tier:"grassroots"});
+    if (!form.name || !form.area) return;
+    const nv: Venue = {
+      id: Date.now(), name:form.name, area:form.area, borough:form.borough||"London",
+      capacity: form.capacity ? parseInt(form.capacity) : null,
+      genres: form.genres.split(",").map(g=>g.trim()).filter(Boolean),
+      tier: form.tier, email:form.email, website:form.website, description:"",
+    };
+    setVenues(p => [...p, nv]);
+    setForm({ name:"", area:"", borough:"", capacity:"", genres:"", website:"", email:"", tier:"grassroots" });
     setAdding(false);
-    showToast("Venue added!");
+    toast("Venue added!");
   };
 
-  return(
+  return (
     <div className="page fade">
-      <div className="ph"><h1>London Venue Database</h1><p>Browse and manage all 55+ London venues.</p></div>
+      <div className="ph"><h1>Venue Database</h1><p>All 65 London music venues.</p></div>
 
-      <div style={{display:"flex",gap:10,marginBottom:20,flexWrap:"wrap"}}>
-        <input className="inp" placeholder="Search venues, areas, genres…" value={search} onChange={e=>setSearch(e.target.value)} style={{maxWidth:280}}/>
-        <select className="inp" value={tierF} onChange={e=>setTierF(e.target.value)} style={{maxWidth:150}}>
+      <div style={{ display:"flex", gap:9, marginBottom:18, flexWrap:"wrap" }}>
+        <input className="inp" placeholder="Search…" value={q} onChange={e=>setQ(e.target.value)} style={{ maxWidth:260 }} />
+        <select className="inp" value={tierF} onChange={e=>setTierF(e.target.value)} style={{ maxWidth:145 }}>
           <option value="all">All tiers</option>
           <option value="grassroots">Grassroots</option>
           <option value="mid">Mid-size</option>
@@ -1111,52 +1485,48 @@ function VenueDB({venues, setVenues, showToast}) {
           <option value="iconic">Iconic</option>
           <option value="large">Major</option>
         </select>
-        <div style={{marginLeft:"auto"}}><button className="btn btn-gold btn-sm" onClick={()=>setAdding(true)}>+ Add venue</button></div>
+        <div style={{ marginLeft:"auto" }}><button className="btn btn-primary btn-sm" onClick={() => setAdding(true)}>+ Add venue</button></div>
       </div>
 
-      {adding&&(
-        <div className="card" style={{marginBottom:20,borderColor:"rgba(232,184,75,.25)"}}>
-          <h3 style={{fontFamily:"var(--font-d)",fontWeight:700,marginBottom:16,fontSize:15}}>Add new venue</h3>
-          <div className="g2" style={{gap:12,marginBottom:12}}>
-            <div className="field"><label className="label">Venue name *</label><input className="inp" placeholder="The Windmill" value={form.name} onChange={e=>up("name",e.target.value)}/></div>
-            <div className="field"><label className="label">Area *</label><input className="inp" placeholder="Brixton" value={form.area} onChange={e=>up("area",e.target.value)}/></div>
-            <div className="field"><label className="label">Capacity</label><input className="inp" type="number" placeholder="150" value={form.capacity} onChange={e=>up("capacity",e.target.value)}/></div>
+      {adding && (
+        <div className="card" style={{ marginBottom:18, borderColor:"rgba(245,166,35,.2)" }}>
+          <h3 style={{ fontFamily:"var(--fd)", fontWeight:700, fontSize:14, marginBottom:14 }}>Add new venue</h3>
+          <div className="g2" style={{ gap:11, marginBottom:11 }}>
+            {[["name","Venue name *","The Windmill"],["area","Area *","Brixton"],["borough","Borough","Lambeth"],["capacity","Capacity","150"],["genres","Genres (comma-sep)","indie, punk, folk"],["website","Website","venue.co.uk"],["email","Booking email","bookings@venue.co.uk"]].map(([k,l,ph]) => (
+              <div className="field" key={k}><label className="label">{l}</label><input className="inp" placeholder={ph} value={(form as any)[k]} onChange={e=>upF(k,e.target.value)} /></div>
+            ))}
             <div className="field"><label className="label">Tier</label>
-              <select className="inp" value={form.tier} onChange={e=>up("tier",e.target.value)}>
-                <option value="grassroots">Grassroots</option>
-                <option value="mid">Mid-size</option>
-                <option value="specialist">Specialist</option>
-                <option value="iconic">Iconic</option>
-                <option value="large">Major</option>
+              <select className="inp" value={form.tier} onChange={e=>upF("tier",e.target.value)}>
+                {["grassroots","mid","specialist","iconic","large"].map(t => <option key={t} value={t}>{t}</option>)}
               </select>
             </div>
-            <div className="field"><label className="label">Genres (comma separated)</label><input className="inp" placeholder="indie, folk, jazz" value={form.genres} onChange={e=>up("genres",e.target.value)}/></div>
-            <div className="field"><label className="label">Website</label><input className="inp" placeholder="venue.co.uk" value={form.website} onChange={e=>up("website",e.target.value)}/></div>
-            <div className="field"><label className="label">Booking email</label><input className="inp" placeholder="bookings@venue.co.uk" value={form.email} onChange={e=>up("email",e.target.value)}/></div>
           </div>
-          <div style={{display:"flex",gap:8}}>
-            <button className="btn btn-gold" onClick={addVenue}>Add venue</button>
-            <button className="btn btn-outline" onClick={()=>setAdding(false)}>Cancel</button>
+          <div style={{ display:"flex", gap:8 }}>
+            <button className="btn btn-primary" onClick={addVenue}>Add venue</button>
+            <button className="btn btn-outline" onClick={() => setAdding(false)}>Cancel</button>
           </div>
         </div>
       )}
 
-      <div style={{color:"var(--text3)",fontSize:12,marginBottom:12}}>{filtered.length} venues</div>
-
-      <div className="card" style={{padding:0,overflowX:"auto"}}>
+      <div style={{ color:"var(--text3)", fontSize:12, marginBottom:11 }}>{filtered.length} venues</div>
+      <div className="card" style={{ padding:0, overflowX:"auto" }}>
         <table className="tbl">
-          <thead><tr><th>Venue</th><th>Area</th><th>Tier</th><th>Capacity</th><th>Genres</th><th>Contact</th></tr></thead>
+          <thead><tr><th>Venue</th><th>Area</th><th>Borough</th><th>Tier</th><th>Cap.</th><th>Genres</th><th>Email</th></tr></thead>
           <tbody>
-            {filtered.map(v=>(
-              <tr key={v.id}>
-                <td style={{fontWeight:600,fontSize:13}}>{v.name}</td>
-                <td style={{color:"var(--text2)"}}>{v.area}</td>
-                <td><span className={`badge ${tierColor(v.tier)}`}>{tierLabel(v.tier)}</span></td>
-                <td style={{color:"var(--text2)"}}>{v.capacity?.toLocaleString()||"—"}</td>
-                <td><div style={{display:"flex",flexWrap:"wrap",gap:2,maxWidth:200}}>{v.genres.slice(0,3).map(g=><span key={g} className="tag">{g}</span>)}{v.genres.length>3&&<span className="tag">+{v.genres.length-3}</span>}</div></td>
-                <td style={{color:"var(--text3)",fontSize:11}}>{v.email||"—"}</td>
-              </tr>
-            ))}
+            {filtered.map(v => {
+              const tb = tierBadge(v.tier);
+              return (
+                <tr key={v.id}>
+                  <td style={{ fontWeight:600, fontSize:13 }}>{v.name}</td>
+                  <td style={{ color:"var(--text2)" }}>{v.area}</td>
+                  <td style={{ color:"var(--text3)", fontSize:12 }}>{v.borough}</td>
+                  <td><span className={`badge ${tb.cls}`}>{tb.lbl}</span></td>
+                  <td style={{ color:"var(--text2)" }}>{v.capacity?.toLocaleString()||"—"}</td>
+                  <td><div style={{ display:"flex", flexWrap:"wrap", gap:2, maxWidth:200 }}>{v.genres.slice(0,3).map(g=><span key={g} className="tag">{g}</span>)}{v.genres.length>3&&<span className="tag">+{v.genres.length-3}</span>}</div></td>
+                  <td style={{ color:"var(--text3)", fontSize:11 }}>{v.email||"—"}</td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -1165,84 +1535,107 @@ function VenueDB({venues, setVenues, showToast}) {
 }
 
 // ─── ACCOUNT ──────────────────────────────────────────────────────────────────
-function Account({user, profile, plan, onUpgrade, onLogout, showToast}) {
+function Account({ user, profile, plan, setPlan, onLogout, toast }: { user:User; profile:Profile; plan:Plan; setPlan:(p:Plan)=>void; onLogout:()=>void; toast:(m:string,t?:ToastType)=>void }) {
   const [editing, setEditing] = useState(false);
-  const [p, setP] = useState({...profile});
-  const up = (k,v) => setP(x=>({...x,[k]:v}));
+  const [p, setP] = useState({ ...profile });
+  const [saving, setSaving] = useState(false);
+  const [upgrading, setUpgrading] = useState<string|null>(null);
+  const upP = (k: keyof Profile, v: string) => setP(x => ({ ...x, [k]:v }));
 
   const save = async () => {
-    if(supabase&&user.id!=="demo") {
-      await supabase.from("profiles").upsert({user_id:user.id,...p});
+    setSaving(true);
+    if (sb && user.id !== "demo") {
+      await sb.from("profiles").upsert({ user_id:user.id, artist_name:p.artistName, area:p.area, genre:p.genre, similar_artists:p.similarArtists, bio:p.bio, spotify:p.spotify, soundcloud:p.soundcloud, instagram:p.instagram, website:p.website });
     }
-    setEditing(false);
-    showToast("Profile saved!");
+    setSaving(false); setEditing(false);
+    toast("Profile saved!");
   };
 
-  return(
+  const upgrade = async (targetPlan: "artist"|"pro") => {
+    setUpgrading(targetPlan);
+    const ok = await goStripe(targetPlan, user.email);
+    if (!ok) {
+      // Demo: simulate upgrade
+      setPlan(targetPlan);
+      toast(`Upgraded to ${targetPlan.charAt(0).toUpperCase()+targetPlan.slice(1)} plan! 🎉`);
+    }
+    setUpgrading(null);
+  };
+
+  return (
     <div className="page fade">
       <div className="ph"><h1>Account</h1><p>Manage your profile and subscription.</p></div>
-      <div className="g2" style={{gap:24,alignItems:"start"}}>
+      <div className="g2" style={{ gap:22, alignItems:"start" }}>
+
         <div className="card">
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:18}}>
-            <h3 style={{fontFamily:"var(--font-d)",fontWeight:700,fontSize:15}}>Artist profile</h3>
-            {!editing&&<button className="btn btn-outline btn-sm" onClick={()=>setEditing(true)}>Edit</button>}
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
+            <h3 style={{ fontFamily:"var(--fd)", fontWeight:700, fontSize:14 }}>Artist profile</h3>
+            {!editing && <button className="btn btn-outline btn-sm" onClick={() => setEditing(true)}>Edit</button>}
           </div>
-          {editing?(
-            <div style={{display:"flex",flexDirection:"column",gap:12}}>
-              {[["artistName","Artist name"],["area","Area"],["genre","Genre"],["similarArtists","Sounds like"],["bio","Bio"],["spotify","Spotify"],["instagram","Instagram"]].map(([k,l])=>(
+          {editing ? (
+            <div style={{ display:"flex", flexDirection:"column", gap:11 }}>
+              {([ ["artistName","Artist name"], ["area","Area"], ["genre","Genre"], ["similarArtists","Sounds like"], ["bio","Bio"], ["spotify","Spotify"], ["soundcloud","SoundCloud"], ["instagram","Instagram"], ["website","Website"] ] as [keyof Profile, string][]).map(([k,l]) => (
                 <div className="field" key={k}><label className="label">{l}</label>
-                  {k==="bio"?<textarea className="inp" value={p[k]||""} onChange={e=>up(k,e.target.value)}/>:<input className="inp" value={p[k]||""} onChange={e=>up(k,e.target.value)}/>}
+                  {k==="bio" ? <textarea className="inp" value={p[k]||""} onChange={e=>upP(k,e.target.value)} /> : <input className="inp" value={p[k]||""} onChange={e=>upP(k,e.target.value)} />}
                 </div>
               ))}
-              <div style={{display:"flex",gap:8}}>
-                <button className="btn btn-gold" onClick={save}>Save changes</button>
-                <button className="btn btn-outline" onClick={()=>setEditing(false)}>Cancel</button>
+              <div style={{ display:"flex", gap:8 }}>
+                <button className="btn btn-primary" onClick={save} disabled={saving}>{saving?"Saving…":"Save changes"}</button>
+                <button className="btn btn-outline" onClick={() => setEditing(false)}>Cancel</button>
               </div>
             </div>
-          ):(
-            <div style={{display:"flex",flexDirection:"column",gap:10}}>
-              {[["Artist name",profile.artistName],["Area",profile.area],["Genre",profile.genre],["Sounds like",profile.similarArtists||"—"],["Bio",profile.bio||"—"]].map(([l,v])=>(
+          ) : (
+            <div style={{ display:"flex", flexDirection:"column", gap:9 }}>
+              {([ ["Artist name",profile.artistName], ["Area",profile.area], ["Genre",profile.genre], ["Sounds like",profile.similarArtists||"—"], ["Bio",profile.bio||"—"] ] as [string,string][]).map(([l,v]) => (
                 <div key={l}>
-                  <div className="label" style={{marginBottom:3}}>{l}</div>
-                  <div style={{fontSize:13}}>{v}</div>
-                  <hr className="div" style={{margin:"8px 0 0"}}/>
+                  <div className="label" style={{ marginBottom:2 }}>{l}</div>
+                  <div style={{ fontSize:13 }}>{v}</div>
+                  <hr className="div" style={{ margin:"7px 0 0" }} />
                 </div>
               ))}
-              <div style={{display:"flex",gap:8,flexWrap:"wrap",marginTop:4}}>
-                {profile.spotify&&<a href={profile.spotify} target="_blank" rel="noreferrer" className="btn btn-outline btn-sm">🎵 Spotify</a>}
-                {profile.soundcloud&&<a href={profile.soundcloud} target="_blank" rel="noreferrer" className="btn btn-outline btn-sm">☁ SoundCloud</a>}
-                {profile.instagram&&<a href={profile.instagram} target="_blank" rel="noreferrer" className="btn btn-outline btn-sm">📸 Instagram</a>}
+              <div style={{ display:"flex", gap:7, flexWrap:"wrap", marginTop:4 }}>
+                {profile.spotify && <a href={profile.spotify} target="_blank" rel="noreferrer" className="btn btn-outline btn-sm">🎵 Spotify</a>}
+                {profile.soundcloud && <a href={profile.soundcloud} target="_blank" rel="noreferrer" className="btn btn-outline btn-sm">☁ SoundCloud</a>}
+                {profile.instagram && <a href={profile.instagram} target="_blank" rel="noreferrer" className="btn btn-outline btn-sm">📸 Instagram</a>}
+                {profile.website && <a href={profile.website} target="_blank" rel="noreferrer" className="btn btn-outline btn-sm">🌐 Website</a>}
               </div>
             </div>
           )}
         </div>
 
-        <div style={{display:"flex",flexDirection:"column",gap:20}}>
+        <div style={{ display:"flex", flexDirection:"column", gap:18 }}>
+          {/* Subscription */}
           <div className="card">
-            <h3 style={{fontFamily:"var(--font-d)",fontWeight:700,fontSize:15,marginBottom:16}}>Subscription</h3>
-            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14}}>
+            <h3 style={{ fontFamily:"var(--fd)", fontWeight:700, fontSize:14, marginBottom:14 }}>Subscription</h3>
+            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:14 }}>
               <div>
-                <div style={{fontWeight:600,marginBottom:2,fontSize:14}}>{plan==="free"?"Free plan":plan==="artist"?"Artist plan — £15/mo":"Pro plan — £39/mo"}</div>
-                <div style={{color:"var(--text3)",fontSize:12}}>{plan==="free"?"5 matches · 3 emails/month":plan==="artist"?"Unlimited matches · 50 emails/month":"Unlimited everything"}</div>
+                <div style={{ fontWeight:600, marginBottom:2, fontSize:14 }}>{PLANS[plan].name} plan — {PLANS[plan].label}</div>
+                <div style={{ color:"var(--text3)", fontSize:12 }}>
+                  {plan==="free" ? "5 matches · 3 emails/month" : plan==="artist" ? "Unlimited matches · 50 emails/month" : "Unlimited everything"}
+                </div>
               </div>
-              <span className={`badge ${plan==="pro"?"b-gold":plan==="artist"?"b-emerald":"b-dim"}`}>{plan.charAt(0).toUpperCase()+plan.slice(1)}</span>
+              <span className={`badge ${plan==="pro"?"b-orange":plan==="artist"?"b-green":"b-muted"}`}>{PLANS[plan].name}</span>
             </div>
-            {plan==="free"&&(
-              <div style={{marginBottom:14}}>
-                <div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:"var(--text3)",marginBottom:5}}><span>Monthly usage</span><span>3 / 5 matches</span></div>
-                <div className="pbar"><div className="pfill" style={{width:"60%"}}/></div>
+            {plan !== "pro" && (
+              <div style={{ display:"flex", flexDirection:"column", gap:9 }}>
+                {(["artist","pro"] as const).filter(tp => tp !== plan || plan === "free").map(tp => (
+                  <button key={tp} className="btn btn-primary btn-block" disabled={!!upgrading} onClick={() => upgrade(tp)}>
+                    {upgrading===tp ? "Redirecting to Stripe…" : `Upgrade to ${PLANS[tp].name} — ${PLANS[tp].label}`}
+                  </button>
+                ))}
+                {DEMO && <p style={{ fontSize:11, color:"var(--text3)", textAlign:"center" }}>Add Stripe keys to Vercel to enable real payments.</p>}
               </div>
             )}
-            {plan!=="pro"&&<button className="btn btn-gold btn-block" onClick={onUpgrade}>{plan==="free"?"Upgrade to Artist — £15/mo":"Upgrade to Pro — £39/mo"}</button>}
-            {DEMO_MODE&&<p style={{fontSize:11,color:"var(--text3)",marginTop:8,textAlign:"center"}}>Stripe not configured — payments are simulated</p>}
+            {plan === "pro" && <p style={{ fontSize:13, color:"var(--green)" }}>✓ You're on the Pro plan. Enjoy unlimited access!</p>}
           </div>
 
+          {/* Sign out */}
           <div className="card">
-            <h3 style={{fontFamily:"var(--font-d)",fontWeight:700,fontSize:15,marginBottom:14}}>Account</h3>
-            <div style={{marginBottom:3,color:"var(--text3)",fontSize:10,textTransform:"uppercase",letterSpacing:".08em",fontFamily:"var(--font-d)"}}>Signed in as</div>
-            <div style={{fontWeight:600,marginBottom:3,fontSize:14}}>{user.name}</div>
-            <div style={{color:"var(--text3)",fontSize:12,marginBottom:16}}>{user.email}</div>
-            <button className="btn btn-danger btn-sm" onClick={onLogout}>Sign out</button>
+            <h3 style={{ fontFamily:"var(--fd)", fontWeight:700, fontSize:14, marginBottom:13 }}>Account</h3>
+            <div style={{ marginBottom:3, color:"var(--text3)", fontSize:10, textTransform:"uppercase", letterSpacing:".08em" }}>Signed in as</div>
+            <div style={{ fontWeight:600, marginBottom:2, fontSize:14 }}>{user.name}</div>
+            <div style={{ color:"var(--text3)", fontSize:12, marginBottom:15 }}>{user.email}</div>
+            <button className="btn btn-danger btn-sm" onClick={async () => { if(sb) await sb.auth.signOut(); onLogout(); }}>Sign out</button>
           </div>
         </div>
       </div>
@@ -1251,204 +1644,267 @@ function Account({user, profile, plan, onUpgrade, onLogout, showToast}) {
 }
 
 // ─── UPGRADE MODAL ────────────────────────────────────────────────────────────
-function UpgradeModal({onClose, onUpgrade, user}) {
-  const [loading, setLoading] = useState(null);
+function UpgradeModal({ onClose, user, setPlan, toast }: { onClose:()=>void; user:User; setPlan:(p:Plan)=>void; toast:(m:string,t?:ToastType)=>void }) {
+  const [loading, setLoading] = useState<string|null>(null);
 
-  const select = async (plan) => {
+  const pick = async (plan: "artist"|"pro") => {
     setLoading(plan);
-    const ok = await openStripeCheckout(plan, user.email);
-    if(!ok) {
-      // Simulated upgrade in demo mode
-      onUpgrade(plan);
-      onClose();
-    }
+    const ok = await goStripe(plan, user.email);
+    if (!ok) { setPlan(plan); toast(`Upgraded to ${plan.charAt(0).toUpperCase()+plan.slice(1)}! 🎉`); onClose(); }
     setLoading(null);
   };
 
-  return(
-    <div className="overlay" onClick={e=>e.target===e.currentTarget&&onClose()}>
+  return (
+    <div className="overlay" onClick={e => e.target===e.currentTarget && onClose()}>
       <div className="modal">
         <button className="modal-x" onClick={onClose}>×</button>
-        <div style={{fontFamily:"var(--font-d)",fontSize:22,fontWeight:800,marginBottom:6,letterSpacing:"-.02em"}}>Unlock the full platform</div>
-        <p style={{color:"var(--text2)",fontSize:13,marginBottom:26,fontWeight:300}}>Choose a plan to start reaching more London venues.</p>
-        {DEMO_MODE&&<div className="demo-banner" style={{marginBottom:20}}>🎭 Demo mode — plan selection is simulated. Add Stripe keys to enable real payments.</div>}
-        <div style={{display:"flex",flexDirection:"column",gap:12}}>
-          {[
-            {name:"Artist",price:"£15/mo",perks:"Unlimited matches · 50 emails/mo · Full tracking · AI emails",plan:"artist",popular:true},
-            {name:"Pro",price:"£39/mo",perks:"Unlimited everything · Analytics · Priority support",plan:"pro",popular:false},
-          ].map(p=>(
-            <div key={p.name} className="card2" style={{display:"flex",alignItems:"center",gap:14,border:p.popular?"1px solid rgba(232,184,75,.3)":""}}>
-              <div style={{flex:1}}>
-                <div style={{display:"flex",alignItems:"center",gap:8}}>
-                  <span style={{fontFamily:"var(--font-d)",fontWeight:700,fontSize:15}}>{p.name}</span>
-                  {p.popular&&<span className="badge b-gold">Popular</span>}
+        <h2 style={{ fontSize:20, fontWeight:700, marginBottom:5 }}>Unlock the full platform</h2>
+        <p style={{ color:"var(--text2)", fontSize:13, marginBottom:24 }}>Choose a plan to reach more London venues.</p>
+        {DEMO && <div className="demo-pill" style={{ marginBottom:18 }}>🎭 Demo mode — add Stripe keys to Vercel to take real payments.</div>}
+        <div style={{ display:"flex", flexDirection:"column", gap:11 }}>
+          {([
+            { name:"Artist", price:"£15/month", perks:"Unlimited matches · 50 emails · Full tracking", plan:"artist" as const, hot:true },
+            { name:"Pro", price:"£39/month", perks:"Unlimited everything · Priority support", plan:"pro" as const, hot:false },
+          ]).map(p => (
+            <div key={p.name} className="card2" style={{ display:"flex", alignItems:"center", gap:13, border:p.hot?"1px solid rgba(245,166,35,.3)":"" }}>
+              <div style={{ flex:1 }}>
+                <div style={{ display:"flex", alignItems:"center", gap:7 }}>
+                  <span style={{ fontFamily:"var(--fd)", fontWeight:700, fontSize:14 }}>{p.name}</span>
+                  {p.hot && <span className="badge b-orange">Popular</span>}
                 </div>
-                <div style={{fontFamily:"var(--font-d)",fontWeight:800,fontSize:18,color:"var(--gold)",margin:"2px 0"}}>{p.price}</div>
-                <div style={{color:"var(--text2)",fontSize:12,fontWeight:300}}>{p.perks}</div>
+                <div style={{ fontFamily:"var(--fd)", fontWeight:700, fontSize:17, color:"var(--orangeHi)", margin:"2px 0" }}>{p.price}</div>
+                <div style={{ color:"var(--text2)", fontSize:12 }}>{p.perks}</div>
               </div>
-              <button className="btn btn-gold btn-sm" onClick={()=>select(p.plan)} disabled={!!loading}>
-                {loading===p.plan?"…":"Select"}
+              <button className="btn btn-primary btn-sm" onClick={() => pick(p.plan)} disabled={!!loading}>
+                {loading===p.plan ? "…" : "Select"}
               </button>
             </div>
           ))}
         </div>
-        <div style={{background:"var(--surface)",borderRadius:8,padding:"12px 14px",marginTop:18,fontSize:11,color:"var(--text3)"}}>
-          💳 Payments processed by Stripe · Cancel anytime · Prices include VAT
+        <div style={{ background:"var(--surface)", borderRadius:7, padding:"11px 13px", marginTop:16, fontSize:11, color:"var(--text3)" }}>
+          💳 Secure payments via Stripe · Cancel anytime · Prices include VAT
         </div>
       </div>
     </div>
   );
 }
 
-// ─── MOBILE NAV ───────────────────────────────────────────────────────────────
-function MobileNav({page, setPage}) {
-  const items = [["dashboard","⚡","Home"],["discover","🎯","Venues"],["outreach","📬","Outreach"],["account","👤","Account"]];
-  return(
-    <div style={{position:"fixed",bottom:0,left:0,right:0,background:"var(--surface)",borderTop:"1px solid var(--border)",display:"flex",zIndex:100,paddingBottom:"env(safe-area-inset-bottom)"}}>
-      {items.map(([id,icon,label])=>(
-        <button key={id} onClick={()=>setPage(id)} style={{flex:1,padding:"10px 0",background:"none",border:"none",color:page===id?"var(--gold)":"var(--text3)",display:"flex",flexDirection:"column",alignItems:"center",gap:2,fontSize:9,fontFamily:"var(--font-d)",fontWeight:700,cursor:"pointer",letterSpacing:".04em"}}>
-          <span style={{fontSize:19}}>{icon}</span>{label.toUpperCase()}
-        </button>
-      ))}
-    </div>
-  );
-}
+// ─────────────────────────────────────────────────────────────────────────────
+// ROOT APP
+// ─────────────────────────────────────────────────────────────────────────────
 
-// ─── MAIN APP ─────────────────────────────────────────────────────────────────
 export default function App() {
-  const [screen, setScreen] = useState("landing");
+  const [screen, setScreen]   = useState<Screen>("landing");
   const [authMode, setAuthMode] = useState("signup");
-  const [user, setUser] = useState(null);
-  const [profile, setProfile] = useState(null);
-  const [page, setPage] = useState("dashboard");
-  const [plan, setPlan] = useState("free");
-  const [outreach, setOutreach] = useState(SAMPLE_OUTREACH);
-  const [venues, setVenues] = useState(UK_VENUES);
-  const [matchedVenues, setMatchedVenues] = useState([]);
-  const [emailVenue, setEmailVenue] = useState(null);
+  const [user, setUser]       = useState<User|null>(null);
+  const [profile, setProfile] = useState<Profile|null>(null);
+  const [page, setPage]       = useState<Page>("dashboard");
+  const [plan, setPlan]       = useState<Plan>("free");
+  const [outreach, setOutreach] = useState<OutreachEntry[]>([]);
+  const [venues, setVenues]   = useState<Venue[]>(VENUES);
+  const [matched, setMatched] = useState<Venue[]>([]);
+  const [emailVenue, setEmailVenue] = useState<Venue|null>(null);
   const [showUpgrade, setShowUpgrade] = useState(false);
-  const [toast, setToast] = useState(null);
+  const [toastData, setToastData] = useState<{msg:string;type:ToastType}|null>(null);
   const [isMobile, setIsMobile] = useState(false);
 
-  useEffect(()=>{
-    initSupabase().then(sb=>{
-      if(!sb) return;
-      // Check for existing session
-      sb.auth.getSession().then(({data:{session}})=>{
-        if(session?.user) {
-          const u = session.user;
-          setUser({email:u.email,name:u.user_metadata?.full_name||u.email.split("@")[0],provider:u.app_metadata?.provider||"email",id:u.id});
-          // Load profile from DB
-          sb.from("profiles").select("*").eq("user_id",u.id).single().then(({data})=>{
-            if(data) {
-              setProfile({artistName:data.artist_name,area:data.area,genre:data.genre,similarArtists:data.similar_artists,bio:data.bio,spotify:data.spotify,soundcloud:data.soundcloud,instagram:data.instagram});
-              setScreen("app");
-            } else {
-              setScreen("onboarding");
-            }
-          });
-        }
+  const toast = useCallback((msg: string, type: ToastType = "ok") => setToastData({ msg, type }), []);
+
+  // Init: Supabase session check + URL param handling
+  useEffect(() => {
+    // Handle Stripe success redirect
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("payment") === "success") {
+      const p = params.get("plan") as Plan || "artist";
+      setPlan(p);
+      toast(`Subscribed to ${p} plan! Welcome! 🎉`);
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+
+    // Init Supabase
+    initSB().then(client => {
+      if (!client) return;
+      client.auth.getSession().then(({ data: { session } }: any) => {
+        if (session?.user) loadUser(session.user);
       });
-      // Auth state listener
-      sb.auth.onAuthStateChange((_event,session)=>{
-        if(session?.user&&screen==="landing") {
-          const u = session.user;
-          setUser({email:u.email,name:u.user_metadata?.full_name||u.email.split("@")[0],provider:u.app_metadata?.provider||"email",id:u.id});
-          setScreen("onboarding");
-        }
+      client.auth.onAuthStateChange((_: any, session: any) => {
+        if (session?.user) loadUser(session.user);
       });
     });
-    const check=()=>setIsMobile(window.innerWidth<768);
-    check();
-    window.addEventListener("resize",check);
-    return()=>window.removeEventListener("resize",check);
-  },[]);
 
-  useEffect(()=>{
-    if(profile) setMatchedVenues(matchVenues(profile,venues));
-  },[profile,venues]);
+    const onResize = () => setIsMobile(window.innerWidth < 768);
+    onResize();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
 
-  const showToast = (msg,type="ok") => setToast({msg,type});
-  const handleAuth = (u) => {setUser(u);setScreen("onboarding");};
-  const handleOnboarding = (p) => {setProfile(p);setScreen("app");showToast(`Welcome to GigPilot, ${p.artistName}! 🎵`);};
-  const handleSendEmail = (venue) => setEmailVenue(venue);
-  const handleEmailSent = ({venue,subject}) => {
-    setOutreach(prev=>[{id:Date.now(),venueId:venue.id,venue:venue.name,area:venue.area,date:new Date().toISOString().split("T")[0],status:"sent",subject,notes:""},...prev]);
+  const loadUser = async (u: any) => {
+    const usr: User = { id:u.id, email:u.email, name:u.user_metadata?.full_name||u.email.split("@")[0], provider:u.app_metadata?.provider||"email" };
+    setUser(usr);
+    if (!sb) return;
+    const { data } = await sb.from("profiles").select("*").eq("user_id", u.id).single();
+    if (data) {
+      const p: Profile = { artistName:data.artist_name, area:data.area, genre:data.genre, similarArtists:data.similar_artists, bio:data.bio, spotify:data.spotify, soundcloud:data.soundcloud, instagram:data.instagram, website:data.website };
+      setProfile(p);
+      // Load outreach from DB
+      const { data: ow } = await sb.from("outreach").select("*").eq("user_id", u.id).order("sent_at", { ascending:false });
+      if (ow) setOutreach(ow.map((o: any) => ({ id:o.id, venueId:o.venue_id, venue:o.venue_name, area:o.venue_area, date:o.sent_at.split("T")[0], status:o.status, subject:o.email_subject, body:o.email_body, notes:o.notes||"" })));
+      // Load subscription
+      const { data: sub } = await sb.from("subscriptions").select("*").eq("user_id", u.id).single();
+      if (sub) setPlan(sub.plan);
+      setScreen("app");
+    } else {
+      setScreen("onboarding");
+    }
   };
 
-  const navItems = [
-    {id:"dashboard",icon:"⚡",label:"Dashboard"},
-    {id:"discover",icon:"🎯",label:"Discover Venues"},
-    {id:"outreach",icon:"📬",label:"Outreach"},
-    {id:"venues",icon:"🗺",label:"Venue Database"},
-    {id:"account",icon:"👤",label:"Account"},
+  // Recalculate venue matches when profile or venues change
+  useEffect(() => {
+    if (profile) setMatched(matchVenues(profile, venues));
+  }, [profile, venues]);
+
+  const handleAuth = (u: User) => {
+    setUser(u);
+    setScreen("onboarding");
+  };
+
+  const handleOnboarding = (p: Profile) => {
+    setProfile(p);
+    setScreen("app");
+    toast(`Welcome to GigPilot, ${p.artistName}! 🎵`);
+  };
+
+  const handleEmailSent = async (venue: Venue, subject: string, body: string) => {
+    const entry: OutreachEntry = {
+      id: Date.now().toString(), venueId:venue.id, venue:venue.name, area:venue.area,
+      date: new Date().toISOString().split("T")[0], status:"sent", subject, body, notes:""
+    };
+    setOutreach(p => [entry, ...p]);
+    if (sb && user?.id !== "demo") {
+      await sb.from("outreach").insert({
+        user_id:user!.id, venue_id:venue.id, venue_name:venue.name, venue_area:venue.area,
+        email_subject:subject, email_body:body, status:"sent"
+      });
+    }
+  };
+
+  const openEmail = (mode: string) => { setAuthMode(mode); setScreen("auth"); };
+
+  const usedEmailsThisMonth = outreach.filter(o => o.date >= thisMonth()).length;
+
+  const NAV = [
+    { id:"dashboard" as Page, icon:"⚡", label:"Dashboard" },
+    { id:"discover"  as Page, icon:"🎯", label:"Discover Venues" },
+    { id:"outreach"  as Page, icon:"📬", label:"Outreach" },
+    { id:"venues"    as Page, icon:"🗺", label:"Venue Database" },
+    { id:"account"   as Page, icon:"👤", label:"Account" },
   ];
 
-  if(screen==="landing") return(
-    <><style>{G}</style>
-    <Landing onSignup={()=>{setAuthMode("signup");setScreen("auth");}} onLogin={()=>{setAuthMode("login");setScreen("auth");}}/>
-    {toast&&<Toast msg={toast.msg} type={toast.type} onClose={()=>setToast(null)}/>}</>
+  if (screen === "landing") return (
+    <>
+      <style>{CSS}</style>
+      <Landing onOpen={openEmail} />
+      {toastData && <Toast msg={toastData.msg} type={toastData.type} onClose={() => setToastData(null)} />}
+    </>
   );
 
-  if(screen==="auth") return(
-    <><style>{G}</style>
-    <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"var(--bg)"}}>
-      <Auth initMode={authMode} onClose={()=>setScreen("landing")} onAuth={handleAuth} showToast={showToast}/>
-    </div>
-    {toast&&<Toast msg={toast.msg} type={toast.type} onClose={()=>setToast(null)}/>}</>
+  if (screen === "auth") return (
+    <>
+      <style>{CSS}</style>
+      <div style={{ minHeight:"100vh", display:"flex", alignItems:"center", justifyContent:"center", background:"var(--bg)" }}>
+        <AuthModal mode={authMode} onClose={() => setScreen("landing")} onAuth={handleAuth} toast={toast} />
+      </div>
+      {toastData && <Toast msg={toastData.msg} type={toastData.type} onClose={() => setToastData(null)} />}
+    </>
   );
 
-  if(screen==="onboarding") return(
-    <><style>{G}</style>
-    <Onboarding user={user} onComplete={handleOnboarding}/>
-    {toast&&<Toast msg={toast.msg} type={toast.type} onClose={()=>setToast(null)}/>}</>
+  if (screen === "onboarding" && user) return (
+    <>
+      <style>{CSS}</style>
+      <Onboarding user={user} onDone={handleOnboarding} />
+      {toastData && <Toast msg={toastData.msg} type={toastData.type} onClose={() => setToastData(null)} />}
+    </>
   );
 
-  return(
-    <><style>{G}</style>
-    <div className="app-shell">
-      <aside className="sidebar">
-        <div className="nav-logo">Gig<em>Pilot</em> AI<small>London Booking Assistant</small></div>
-        <div className="nav-sect">Menu</div>
-        {navItems.map(n=>(
-          <button key={n.id} className={`nav-item ${page===n.id?"active":""}`} onClick={()=>setPage(n.id)}>
-            <span className="ni">{n.icon}</span>{n.label}
-          </button>
-        ))}
-        <hr className="nav-div"/>
-        <div className="nav-sect">Account</div>
-        <button className="nav-item" onClick={()=>setPage("account")}>
-          <span className="ni">👤</span>{user?.name||"Account"}
-        </button>
-        <div style={{marginTop:"auto",padding:"14px 10px"}}>
-          <div className="plan-widget">
-            <div style={{fontFamily:"var(--font-d)",fontWeight:700,fontSize:12,color:"var(--gold)",marginBottom:4}}>
-              {plan==="pro"?"Pro Plan":plan==="artist"?"Artist Plan":"Free Plan"}
-            </div>
-            {plan==="free"?(
-              <>
-                <div className="pbar" style={{marginBottom:5}}><div className="pfill" style={{width:"60%"}}/></div>
-                <div style={{fontSize:10,color:"var(--text3)",marginBottom:10}}>3/5 matches · 0/3 emails</div>
-                <button className="btn btn-gold btn-sm btn-block" style={{fontSize:11}} onClick={()=>setShowUpgrade(true)}>Upgrade from £15/mo</button>
-              </>
-            ):<div style={{fontSize:10,color:"var(--text3)"}}>Unlimited matches and emails</div>}
+  return (
+    <>
+      <style>{CSS}</style>
+      <div className="shell">
+
+        {/* Sidebar */}
+        <aside className="sidebar">
+          <div className="logo">Gig<em>Pilot</em> <span style={{ color:"var(--text3)", fontSize:10, fontWeight:400 }}>AI</span>
+            <small>London Booking Assistant</small>
           </div>
-        </div>
-      </aside>
+          <div className="nav-sect">Menu</div>
+          {NAV.map(n => (
+            <button key={n.id} className={`nav-item${page===n.id?" active":""}`} onClick={() => setPage(n.id)}>
+              <span className="ni">{n.icon}</span>{n.label}
+            </button>
+          ))}
+          <hr className="nav-divider" />
+          <div className="plan-box">
+            <div className="plan-inner">
+              <div style={{ fontFamily:"var(--fd)", fontWeight:600, fontSize:12, color:"var(--orangeHi)", marginBottom:4 }}>
+                {PLANS[plan].name} Plan
+              </div>
+              {plan === "free" ? (
+                <>
+                  <div className="pbar" style={{ marginBottom:5 }}><div className="pfill" style={{ width:`${Math.min(100, usedEmailsThisMonth/3*100)}%` }} /></div>
+                  <div style={{ fontSize:10, color:"var(--text3)", marginBottom:9 }}>{usedEmailsThisMonth}/3 emails · {Math.min(matched.length,5)}/5 matches</div>
+                  <button className="btn btn-primary btn-sm btn-block" style={{ fontSize:11 }} onClick={() => setShowUpgrade(true)}>Upgrade from £15/mo</button>
+                </>
+              ) : (
+                <div style={{ fontSize:10, color:"var(--text3)" }}>Unlimited access · {PLANS[plan].label}</div>
+              )}
+            </div>
+          </div>
+        </aside>
 
-      <main className="main" style={{paddingBottom:isMobile?80:0}}>
-        {page==="dashboard"&&<Dashboard profile={profile} outreach={outreach} matchedVenues={matchedVenues} onGoDiscover={()=>setPage("discover")} plan={plan}/>}
-        {page==="discover"&&<Discover profile={profile} plan={plan} matchedVenues={matchedVenues} outreach={outreach} onSendEmail={handleSendEmail} onUpgrade={()=>setShowUpgrade(true)}/>}
-        {page==="outreach"&&<OutreachPage outreach={outreach} setOutreach={setOutreach} plan={plan} onUpgrade={()=>setShowUpgrade(true)}/>}
-        {page==="venues"&&<VenueDB venues={venues} setVenues={setVenues} showToast={showToast}/>}
-        {page==="account"&&<Account user={user} profile={profile} plan={plan} onUpgrade={()=>setShowUpgrade(true)} onLogout={async()=>{if(supabase)await supabase.auth.signOut();setUser(null);setProfile(null);setScreen("landing");}} showToast={showToast}/>}
-      </main>
-    </div>
+        {/* Main */}
+        <main className="main" style={{ paddingBottom: isMobile ? 72 : 0 }}>
+          {page === "dashboard" && profile && (
+            <Dashboard profile={profile} outreach={outreach} matched={matched} plan={plan} onDiscover={() => setPage("discover")} />
+          )}
+          {page === "discover" && profile && (
+            <Discover matched={matched} outreach={outreach} plan={plan} onEmail={v => setEmailVenue(v)} onUpgrade={() => setShowUpgrade(true)} />
+          )}
+          {page === "outreach" && (
+            <OutreachPage outreach={outreach} setOutreach={setOutreach} plan={plan} onUpgrade={() => setShowUpgrade(true)} />
+          )}
+          {page === "venues" && (
+            <VenueDB venues={venues} setVenues={setVenues} toast={toast} />
+          )}
+          {page === "account" && user && profile && (
+            <Account user={user} profile={profile} plan={plan} setPlan={setPlan} onLogout={() => { setUser(null); setProfile(null); setScreen("landing"); }} toast={toast} />
+          )}
+        </main>
+      </div>
 
-    {isMobile&&<MobileNav page={page} setPage={setPage}/>}
-    {emailVenue&&<EmailModal venue={emailVenue} profile={profile} plan={plan} outreachCount={outreach.filter(o=>o.date>=new Date(new Date().getFullYear(),new Date().getMonth(),1).toISOString().split("T")[0]).length} onClose={()=>setEmailVenue(null)} onSend={handleEmailSent} showToast={showToast}/>}
-    {showUpgrade&&<UpgradeModal onClose={()=>setShowUpgrade(false)} onUpgrade={p=>{setPlan(p);showToast(`Upgraded to ${p.charAt(0).toUpperCase()+p.slice(1)} plan! 🎉`);}} user={user}/>}
-    {toast&&<Toast msg={toast.msg} type={toast.type} onClose={()=>setToast(null)}/>}
+      {/* Mobile bottom nav */}
+      {isMobile && (
+        <nav className="mob-nav">
+          {NAV.filter(n => n.id !== "venues").map(n => (
+            <button key={n.id} className={`mob-nav-item${page===n.id?" active":""}`} onClick={() => setPage(n.id)}>
+              <span style={{ fontSize:18 }}>{n.icon}</span>{n.label.split(" ")[0]}
+            </button>
+          ))}
+        </nav>
+      )}
+
+      {/* Modals */}
+      {emailVenue && profile && user && (
+        <EmailModal
+          venue={emailVenue} profile={profile} plan={plan} usedEmails={usedEmailsThisMonth}
+          onClose={() => setEmailVenue(null)}
+          onSent={(subject, body) => handleEmailSent(emailVenue, subject, body)}
+          toast={toast}
+        />
+      )}
+      {showUpgrade && user && (
+        <UpgradeModal onClose={() => setShowUpgrade(false)} user={user} setPlan={setPlan} toast={toast} />
+      )}
+      {toastData && <Toast msg={toastData.msg} type={toastData.type} onClose={() => setToastData(null)} />}
     </>
   );
 }
